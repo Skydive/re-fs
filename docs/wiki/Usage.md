@@ -36,16 +36,21 @@ pipe between your machine and it.
 | Flag | Pipe | Encryption | Who may connect |
 |---|---|---|---|
 | `--usb` | TCP to `10.11.99.1:7745` (only tried while the cable is in) | none (a cable) | anyone on the cable |
-| `--tls ADDR` | TCP + TLS 1.3, e.g. `--tls 192.168.1.50:7745` on Wi-Fi | TLS 1.3 | ed25519 keys in the tablet's `authorized_keys` |
-| `--tcp ADDR` | plain TCP, e.g. `--tcp 10.0.0.5:7745` over WireGuard | none (WireGuard's) | trusted addresses only (USB, loopback/wireproxy) |
+| `--tls HOST[:PORT]` | TCP + TLS 1.3, e.g. `--tls tablet.lan` on Wi-Fi | TLS 1.3 | ed25519 keys in the tablet's `authorized_keys` |
+| `--tcp HOST[:PORT]` | plain TCP, e.g. `--tcp tablet.vpn` over WireGuard | none (WireGuard's) | trusted addresses only (USB, loopback/wireproxy) |
 | `--ssh HOST` | `ssh HOST re-fsd --stdio` | SSH | whoever SSH lets in |
 
 You can give several. Each time re-fs connects it tries them in the order `--usb`,
 each `--tls`, each `--tcp`, then `--ssh`, and stays on the one it got until that link
 drops; then it reconnects the same way.
 
+`--tls` and `--tcp` take `HOST[:PORT]`: a hostname, IPv4 address, or IPv6 address
+(in brackets when a port follows, e.g. `[fe80::1]:7745`). The port is **7745** unless
+given. Names are resolved on every connect, so a changed address is picked up when re-fs
+reconnects; if a name has several addresses, each is tried in turn.
+
 ```sh
-re-fs mount ~/rm --usb --tls 192.168.1.50:7745 --ssh root@tablet.vpn
+re-fs mount ~/rm --usb --tls tablet.lan --ssh root@tablet.vpn
 ```
 
 ### What `--ssh` does

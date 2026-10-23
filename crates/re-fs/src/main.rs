@@ -8,7 +8,6 @@ mod session;
 mod transport;
 mod write;
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -19,13 +18,13 @@ use clap::{Args, Parser, Subcommand};
 use re_proto::index::tree::{Node, NodeKind, Tree, TreeOptions};
 use re_proto::wire::{decompress_entries, Request, Response};
 
-use crate::transport::Target;
+use crate::transport::{HostPort, Target};
 
 /// Where `re-fs deploy` puts the agent, and where `--ssh` runs it from.
 const AGENT_DIR: &str = "/home/root/re-fs";
 const DEFAULT_AGENT: &str = "/home/root/re-fs/re-fsd";
 /// The tablet service's port.
-const AGENT_PORT: u16 = 7745;
+const AGENT_PORT: u16 = transport::DEFAULT_PORT;
 
 #[derive(Parser)]
 #[command(version, about = "FUSE view of a reMarkable tablet's documents")]
@@ -41,19 +40,21 @@ struct Remote {
     /// Use the tablet's USB network (10.11.99.1) whenever the cable is plugged in.
     #[arg(long)]
     usb: bool,
-    /// re-fsd over TLS, e.g. 192.168.1.50:7745 on Wi-Fi (repeatable).
-    #[arg(long, value_name = "ADDR")]
-    tls: Vec<SocketAddr>,
-    /// re-fsd over plain TCP, e.g. 10.0.0.5:7745 over WireGuard (repeatable).
-    #[arg(long, value_name = "ADDR")]
-    tcp: Vec<SocketAddr>,
+    /// re-fsd over TLS on Wi-Fi: a hostname or IP, port 7745 if left out, e.g.
+    /// tablet.lan or 192.168.1.50:7745 (repeatable; names resolved on every connect).
+    #[arg(long, value_name = "HOST[:PORT]")]
+    tls: Vec<HostPort>,
+    /// re-fsd over plain TCP, e.g. over WireGuard: a hostname or IP, port 7745 if left
+    /// out, e.g. tablet.vpn or 10.0.0.5:7745 (repeatable).
+    #[arg(long, value_name = "HOST[:PORT]")]
+    tcp: Vec<HostPort>,
     /// Fall back to `ssh HOST re-fsd --stdio`.
     #[arg(long, value_name = "HOST")]
     ssh: Option<String>,
     /// re-fsd's path on the tablet (with --ssh).
     #[arg(long, default_value = DEFAULT_AGENT)]
     agent: String,
-    /// re-fsd's TCP port (with --usb).
+    /// re-fsd's TCP port with --usb (the tablet service's port).
     #[arg(long, default_value_t = AGENT_PORT)]
     port: u16,
     /// ed25519 private key for TLS (--tls) [default: ~/.ssh/id_ed25519].
@@ -70,8 +71,8 @@ impl Remote {
         if self.usb {
             t.push(Target::Usb { port: self.port });
         }
-        t.extend(self.tls.iter().map(|a| Target::Tls(*a)));
-        t.extend(self.tcp.iter().map(|a| Target::Tcp(*a)));
+        t.extend(self.tls.iter().map(|a| Target::Tls(a.clone())));
+        t.extend(self.tcp.iter().map(|a| Target::Tcp(a.clone())));
         if let Some(host) = &self.ssh {
             t.push(Target::Ssh { host: host.clone(), agent: self.agent.clone() });
         }

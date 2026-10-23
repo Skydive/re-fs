@@ -21,7 +21,7 @@ nix build .#re-fs                                   # client (embeds the matchin
 
 ./result/bin/re-fs deploy root@10.11.99.1 --service # once, over USB: agent, systemd
                                                     # socket, TLS key; pins the tablet key
-./result/bin/re-fs mount ~/rm --usb --tls 192.168.1.50:7745 --ssh root@tablet.vpn
+./result/bin/re-fs mount ~/rm --usb --tls tablet.lan --ssh root@tablet.vpn
 ./result/bin/re-fs mount ~/rm --usb --rw            # with writes
 ./result/bin/re-fs ls --usb -l Books                # list without mounting
 ./result/bin/re-fs push paper.pdf --to Books --usb  # copy in without mounting
@@ -64,12 +64,14 @@ last write, so the tablet shows the changes.
 Every transport talks to **re-fsd**, the agent on the tablet; they differ only in the
 pipe. Give several and re-fs tries them in the order `--usb` (only while the cable is
 in), each `--tls`, each `--tcp`, then `--ssh`, staying on the one it got until it drops.
+`--tls` and `--tcp` take a hostname or IP address (IPv6 in brackets when a port follows);
+the port is 7745 unless given, and names are resolved again on every connect.
 
 | Flag | Pipe | Encryption | Who may connect |
 |---|---|---|---|
 | `--usb` | TCP to `10.11.99.1:7745` | none (a cable) | anyone on the cable |
-| `--tls ADDR` | TCP + TLS 1.3 (Wi-Fi) | TLS 1.3 | ed25519 keys in the tablet's `authorized_keys` |
-| `--tcp ADDR` | plain TCP (e.g. `10.0.0.5:7745` over WireGuard) | none (WireGuard's) | trusted addresses only (USB, loopback/wireproxy) |
+| `--tls HOST[:PORT]` | TCP + TLS 1.3 (Wi-Fi) | TLS 1.3 | ed25519 keys in the tablet's `authorized_keys` |
+| `--tcp HOST[:PORT]` | plain TCP (e.g. `tablet.vpn` over WireGuard) | none (WireGuard's) | trusted addresses only (USB, loopback/wireproxy) |
 | `--ssh HOST` | `ssh HOST re-fsd --stdio` | SSH | whoever SSH lets in |
 
 Over TLS both identities are ed25519 keys: re-fs presents a certificate for
