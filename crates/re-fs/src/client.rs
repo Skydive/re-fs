@@ -200,19 +200,11 @@ impl Client {
         let _ = c.wait_for(|&closed| closed).await;
     }
 
-    /// Hello, and the ssh-key login if the agent asks for one.
     /// Returns (agent name, instance, generation).
     pub async fn hello(&self) -> anyhow::Result<(String, u64, u64)> {
-        let Response::Hello { agent, instance, generation, challenge, .. } = self.call_msg(&Request::Hello { proto: PROTO_VERSION }).await? else {
+        let Response::Hello { agent, instance, generation, .. } = self.call_msg(&Request::Hello { proto: PROTO_VERSION }).await? else {
             anyhow::bail!("unexpected reply to Hello");
         };
-        if let Some(challenge) = challenge {
-            let (public_key, signature) = crate::auth::sign(&re_proto::wire::auth_message(&challenge, instance))?;
-            match self.call_msg(&Request::Auth { public_key, signature }).await? {
-                Response::Ok => {}
-                _ => anyhow::bail!("unexpected reply to Auth"),
-            }
-        }
         Ok((agent, instance, generation))
     }
 }

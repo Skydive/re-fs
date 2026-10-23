@@ -2,7 +2,8 @@
 //! the folder tree built from it, and the wire protocol. No I/O happens here.
 
 pub mod index;
+pub mod tlsid;
 pub mod wire;
 
-/// 2: Hello carries a login challenge; Auth. 3: page files in the index; ReadPage.
-pub const PROTO_VERSION: u16 = 3;
+/// 3: page files in the index; ReadPage. 4: Wi-Fi uses TLS; the challenge login is gone.
+pub const PROTO_VERSION: u16 = 4;

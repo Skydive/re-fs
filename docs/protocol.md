@@ -1,4 +1,4 @@
-# re-fs wire protocol (version 2)
+# re-fs wire protocol (version 4)
 
 One byte stream per connection: TCP, or `ssh HOST re-fsd --stdio`. No encryption of
 its own; use WireGuard, USB or ssh for that.
@@ -21,8 +21,8 @@ after a `Watch` carry the Watch's `req_id`.
 
 | Request | Reply |
 |---|---|
-| `Hello { proto }` | `Hello { proto, agent, instance, generation, challenge }` |
-| `Auth { public_key, signature }` | `Ok`, or `Err(Unauthorized)` and the connection closes |
+| `Hello { proto }` | `Hello { proto, agent, instance, generation }` |
+| `ReadPage { uuid, name, offset, len, expect_mtime_ms }` | like `Read`, for files in `<uuid>/` |
 | `GetIndex { since: Option<(instance, generation)> }` | `Index { instance, generation, full, removed, entries }` |
 | `Read { uuid, file, offset, len, expect_mtime_ms }` | a data frame (shorter at EOF), or `Err(Changed / NotFound)` |
 | `Watch` | `Event { generation }` now, then on every change |
@@ -43,15 +43,16 @@ after a `Watch` carry the Watch's `req_id`.
   real xochitl directory.
 
 Errors are `Err { code, message }`, where `code` is one of BadRequest, NotFound,
-Changed, Io, Unsupported or Conflict.
+Changed, Io, Unsupported, Conflict or Unauthorized.
 
-## Login
+## Transport security
 
-Connections the agent trusts by address (stdio, `--allow-local` addresses) get no
-challenge. Any other connection (only accepted with `--ssh-auth`) gets a random
-32-byte `challenge` in Hello and may send nothing but `Hello` and `Auth` until it
-logs in: an ed25519 signature over `"re-fs-auth-v1\0" || challenge || instance (u64 LE)`
-by a key listed, without options, in the tablet's `authorized_keys`.
+Plain TCP is accepted only from addresses the agent trusts (`--allow-local`: USB,
+loopback). Other clients must speak TLS 1.3 on the same port (the agent tells them
+apart by the first byte, 0x16 for a ClientHello). Both sides authenticate with
+self-signed certificates for ed25519 keys: the client's key must be in the tablet's
+`authorized_keys`; the agent's key must match the one the client pinned. The
+protocol inside is unchanged.
 
 ## Index
 

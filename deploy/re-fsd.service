@@ -2,9 +2,9 @@
 # connection. Installed by `re-fs deploy --service` (via /home/root/re-fs/install.sh).
 #
 # Clients that reach it on the USB network (10.11.99.1) or loopback (127.0.0.1:
-# wireproxy's WireGuard tunnel ends there) are trusted. Others (Wi-Fi) must first
-# log in with an ed25519 key from /home/root/.ssh/authorized_keys; the data itself
-# is not encrypted.
+# wireproxy's WireGuard tunnel ends there) may use plain TCP. Others (Wi-Fi) must
+# use TLS 1.3 with a client certificate for an ed25519 key in
+# /home/root/.ssh/authorized_keys. Our TLS key is /home/root/re-fs/tls.key.
 [Unit]
 Description=re-fs agent
 Requires=re-fsd.socket
@@ -12,7 +12,7 @@ RequiresMountsFor=/home/root
 After=home.mount
 
 [Service]
-ExecStart=/home/root/re-fs/re-fsd --allow-local 127.0.0.1 --allow-local 10.11.99.1 --ssh-auth --idle-exit 300
+ExecStart=/home/root/re-fs/re-fsd --allow-local 127.0.0.1 --allow-local 10.11.99.1 --tls-key /home/root/re-fs/tls.key --idle-exit 300
 Restart=on-failure
 RestartSec=5
 Nice=10

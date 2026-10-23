@@ -47,6 +47,11 @@
       } // extra);
 
       # The tablet agent: static musl, linked by rust-lld (.cargo/config.toml).
+      # ring's C and assembly are compiled by nixpkgs' (cached) ARMv7 GCC against
+      # musl's headers; the result still links as a static musl binary.
+      armPkgs = pkgs.pkgsCross.armv7l-hf-multiplatform;
+      armCC = armPkgs.stdenv.cc;
+      armPrefix = armCC.targetPrefix;
       armCommon = {
         inherit src;
         strictDeps = true;
@@ -54,6 +59,12 @@
         cargoExtraArgs = "-p re-fsd";
         CARGO_BUILD_TARGET = armTarget;
         doCheck = false;
+        nativeBuildInputs = [ armCC ];
+        "CC_armv7_unknown_linux_musleabihf" = "${armPrefix}cc";
+        "AR_armv7_unknown_linux_musleabihf" = "${armPrefix}ar";
+        preBuild = ''
+          export CFLAGS_armv7_unknown_linux_musleabihf="-nostdinc -isystem ${armPkgs.musl.dev}/include -isystem $(${armPrefix}cc -print-file-name=include)"
+        '';
       };
       re-fsd-armv7 = craneLib.buildPackage (armCommon // {
         cargoArtifacts = craneLib.buildDepsOnly armCommon;

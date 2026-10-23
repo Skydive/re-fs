@@ -11,8 +11,10 @@ use tokio::process::{Child, Command};
 pub enum Target {
     /// `ssh HOST AGENT --stdio`: works anywhere ssh does, no service needed.
     Ssh { host: String, agent: String },
-    /// A listening re-fsd (LAN, or through WireGuard).
+    /// A listening re-fsd over plain TCP (USB or WireGuard addresses only).
     Tcp(SocketAddr),
+    /// A listening re-fsd over TLS (Wi-Fi): our ssh key ↔ the pinned tablet key.
+    Tls(SocketAddr),
     /// re-fsd over the tablet's USB network (the tablet is always 10.11.99.1),
     /// tried only while a reMarkable USB link is up.
     Usb { port: u16 },
@@ -74,6 +76,7 @@ impl std::fmt::Display for Target {
         match self {
             Target::Ssh { host, .. } => write!(f, "ssh:{host}"),
             Target::Tcp(a) => write!(f, "tcp:{a}"),
+            Target::Tls(a) => write!(f, "tls:{a}"),
             Target::Usb { port } => write!(f, "usb:{}:{port}", std::net::Ipv4Addr::from(USB_TABLET)),
         }
     }
@@ -102,11 +105,24 @@ pub async fn connect(target: &Target) -> io::Result<Link> {
             let writer = Box::new(child.stdin.take().expect("piped stdin"));
             Ok(Link { reader, writer, child: Some(child) })
         }
+        Target::Tls(addr) => {
+            let cfg = crate::auth::client_config().map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, format!("{e:#}")))?;
+            let s = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr))
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, format!("no answer from {addr}")))??;
+            s.set_nodelay(true)?;
+            let name = rustls::pki_types::ServerName::try_from("re-fsd").expect("valid name");
+            let tls = tokio::time::timeout(CONNECT_TIMEOUT * 5, tokio_rustls::TlsConnector::from(cfg).connect(name, s))
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out"))??;
+            let (r, w) = tokio::io::split(tls);
+            Ok(Link { reader: Box::new(r), writer: Box::new(w), child: None })
+        }
         Target::Tcp(_) | Target::Usb { .. } => {
             let addr = match target {
                 Target::Usb { port } => SocketAddr::from((USB_TABLET, *port)),
                 Target::Tcp(a) => *a,
-                Target::Ssh { .. } => unreachable!(),
+                Target::Ssh { .. } | Target::Tls(_) => unreachable!(),
             };
             let s = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr))
                 .await

@@ -35,13 +35,16 @@ struct Cli {
 }
 
 /// How to reach the tablet. Several may be given; they're tried in the order
-/// USB (while plugged in), each --tcp, then --ssh.
+/// USB (while plugged in), each --tls, each --tcp, then --ssh.
 #[derive(Args, Clone)]
 struct Remote {
     /// Use the tablet's USB network (10.11.99.1) whenever the cable is plugged in.
     #[arg(long)]
     usb: bool,
-    /// A listening re-fsd, e.g. 10.0.0.5:7745 over WireGuard (repeatable).
+    /// re-fsd over TLS, e.g. 192.168.1.50:7745 on Wi-Fi (repeatable).
+    #[arg(long, value_name = "ADDR")]
+    tls: Vec<SocketAddr>,
+    /// re-fsd over plain TCP, e.g. 10.0.0.5:7745 over WireGuard (repeatable).
     #[arg(long, value_name = "ADDR")]
     tcp: Vec<SocketAddr>,
     /// Fall back to `ssh HOST re-fsd --stdio`.
@@ -53,7 +56,7 @@ struct Remote {
     /// re-fsd's TCP port (with --usb).
     #[arg(long, default_value_t = AGENT_PORT)]
     port: u16,
-    /// ed25519 private key for logging in over Wi-Fi [default: ~/.ssh/id_ed25519].
+    /// ed25519 private key for TLS (--tls) [default: ~/.ssh/id_ed25519].
     #[arg(long)]
     identity: Option<PathBuf>,
 }
@@ -67,6 +70,7 @@ impl Remote {
         if self.usb {
             t.push(Target::Usb { port: self.port });
         }
+        t.extend(self.tls.iter().map(|a| Target::Tls(*a)));
         t.extend(self.tcp.iter().map(|a| Target::Tcp(*a)));
         if let Some(host) = &self.ssh {
             t.push(Target::Ssh { host: host.clone(), agent: self.agent.clone() });
@@ -104,7 +108,7 @@ enum Cmd {
     /// List the folder tree as re-fs would show it.
     Ls {
         /// A local copy of the tablet's xochitl directory.
-        #[arg(long, conflicts_with_all = ["ssh", "tcp", "usb"])]
+        #[arg(long, conflicts_with_all = ["ssh", "tcp", "tls", "usb"])]
         mirror: Option<PathBuf>,
         #[command(flatten)]
         remote: Remote,
@@ -141,6 +145,14 @@ enum Cmd {
         #[command(flatten)]
         remote: Remote,
     },
+    /// Pin the tablet's TLS key (fetched over ssh), for --tls.
+    Pair {
+        /// ssh destination, e.g. root@10.11.99.1
+        host: String,
+        /// re-fsd's path on the tablet.
+        #[arg(long, default_value = DEFAULT_AGENT)]
+        agent: String,
+    },
     /// Copy re-fsd to the tablet over ssh.
     Deploy {
         /// ssh destination, e.g. root@tablet.vpn
@@ -160,7 +172,7 @@ fn main() -> Result<()> {
         Cmd::Mount { mountpoint, remote, hide_notebooks, no_views, rw, cache_dir, cache_mib, verbose } => {
             let targets = remote.targets();
             if targets.is_empty() {
-                bail!("give --usb, --tcp ADDR and/or --ssh HOST");
+                bail!("give --usb, --tls ADDR, --tcp ADDR and/or --ssh HOST");
             }
             let dir = cache_dir.unwrap_or_else(cache::Cache::default_dir);
             let cache = cache::Cache::open(dir.clone(), cache_mib << 20).with_context(|| format!("cache {}", dir.display()))?;
@@ -170,7 +182,7 @@ fn main() -> Result<()> {
             let opts = TreeOptions { notebooks: !hide_notebooks, views: !no_views };
             let tree = match mirror {
                 Some(m) => Tree::build(&local::scan(&m)?, 0, &opts),
-                None if remote.targets().is_empty() => bail!("give --mirror DIR, --usb, --tcp ADDR or --ssh HOST"),
+                None if remote.targets().is_empty() => bail!("give --mirror DIR, --usb, --tls ADDR, --tcp ADDR or --ssh HOST"),
                 None => runtime()?.block_on(fetch_tree(remote.targets(), &opts))?,
             };
             if warnings {
@@ -188,11 +200,18 @@ fn main() -> Result<()> {
         }
         Cmd::Push { files, to, remote } => {
             if remote.targets().is_empty() {
-                bail!("give --usb, --tcp ADDR and/or --ssh HOST");
+                bail!("give --usb, --tls ADDR, --tcp ADDR and/or --ssh HOST");
             }
             runtime()?.block_on(push(remote.targets(), &files, &to))
         }
-        Cmd::Deploy { host, binary, service } => deploy(&host, binary, service),
+        Cmd::Pair { host, agent } => pair(&host, &agent),
+        Cmd::Deploy { host, binary, service } => {
+            deploy(&host, binary, service)?;
+            if service {
+                pair(&host, DEFAULT_AGENT)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -311,6 +330,21 @@ async fn mount(targets: Vec<Target>, mountpoint: &Path, opts: TreeOptions, cache
         _ = unmounted => eprintln!("re-fs: unmounted"),
     }
     drop(bg); // unmounts, if still mounted
+    Ok(())
+}
+
+/// Fetch the tablet's TLS public key over ssh (which authenticates the tablet) and pin it.
+fn pair(host: &str, agent: &str) -> Result<()> {
+    let out = std::process::Command::new("ssh")
+        .args(["-o", "BatchMode=yes", host, &format!("{agent} --print-tls-key")])
+        .output()
+        .context("running ssh")?;
+    if !out.status.success() {
+        bail!("{host}: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let hex = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    auth::save_pin(&hex)?;
+    eprintln!("re-fs: pinned the tablet's TLS key {}… ({})", &hex[..16], auth::pin_path().display());
     Ok(())
 }
 

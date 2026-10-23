@@ -16,7 +16,8 @@ serde_json = "1"
 uuid = { version = "1", features = ["serde"] }
 thiserror = "2"
 anyhow = "1"
-ed25519-dalek = "2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 

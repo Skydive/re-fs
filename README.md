@@ -34,6 +34,7 @@ Format notes: [docs/format.md](docs/format.md). Protocol: [docs/protocol.md](doc
 | M4 writes (mkdir, copy in, move, trash) | done |
 | M5 TCP over USB / Wi-Fi (ssh-key login) / WireGuard, tablet service | done |
 | M6/M7 notebooks, annotated PDFs, highlights, .rmdoc, views, xattrs, push | done (PDF stroke placement still to check on a real annotated PDF) |
+| M9 TLS for Wi-Fi (ssh keys as TLS identities) | done; not yet on the tablet |
 
 ## Transports
 
@@ -46,12 +47,18 @@ The tablet service is socket-activated (`deploy/re-fsd.socket` and
 `re-fsd.service`, installed by `re-fs deploy --service`): systemd holds port 7745,
 starts re-fsd on the first connection, and re-fsd exits after 5 minutes with no
 clients, so nothing runs on the tablet while you're not using it. Clients that reach it on 10.11.99.1 (USB) or 127.0.0.1 (where
-wireproxy's tunnels end) are trusted. Anyone else (Wi-Fi, e.g. `--tcp
-192.168.1.50:7745`) must log in with an ssh key: the agent sends a random
-challenge in its Hello, re-fs signs it with `~/.ssh/id_ed25519` (or `--identity`),
-and the agent accepts the key only if it's an unrestricted ssh-ed25519 line in
-`/home/root/.ssh/authorized_keys`, re-read on every login. Same keys, same
-revocation as ssh. Only the login is signed; data on Wi-Fi isn't encrypted.
+wireproxy's tunnels end) may use plain TCP. Anyone else (Wi-Fi) must use TLS 1.3
+(`--tls 192.168.1.50:7745`; rustls with ring), where both identities are ed25519
+keys:
+
+- re-fs presents a self-signed client certificate for `~/.ssh/id_ed25519` (or
+  `--identity`); the agent accepts it only if that key is an unrestricted
+  ssh-ed25519 line in `/home/root/.ssh/authorized_keys` (re-read per handshake).
+- The agent's TLS key lives in `/home/root/re-fs/tls.key`. re-fs accepts only the
+  key pinned in `~/.config/re-fs/tablet.pub`, fetched over ssh by `re-fs pair HOST`
+  (and by `re-fs deploy HOST --service`).
+
+The agent tells TLS from plain TCP by the first byte, so both share port 7745.
 Passphrase-protected keys and ssh-agent aren't supported yet. After a reMarkable OS update, run
 `sh /home/root/re-fs/install.sh` (or add it to `/home/root/wireproxy/reinstall.sh`).
 
@@ -127,7 +134,8 @@ The last index is kept in `~/.cache/re-fs/index.zstd`. If the tablet can't be re
 
 ```
 nix build .#re-fs            # client (its `deploy` installs the matching agent)
-nix build .#re-fsd-armv7     # tablet agent: static armv7 musl, linked with rust-lld
+nix build .#re-fsd-armv7     # tablet agent: static armv7 musl, linked with rust-lld;
+                             # ring's C/asm built by nixpkgs' cached ARMv7 GCC (musl headers)
 nix flake check              # tests, clippy, armv7 build
 nix develop                  # cargo, rust-analyzer
 ```
@@ -164,6 +172,6 @@ tools/check-mirror.sh                                # compare with tools/paths.
 | TCP transport (2026-10-23) | `ls -R` | mount | 16 MB PDF |
 |---|---|---|---|
 | USB | 0.23 s | 0.24 s | 23 MiB/s |
-| Wi-Fi LAN, ssh-key login | 0.39 s | 0.35 s | 10–15 MiB/s |
+| Wi-Fi LAN (before TLS) | 0.39 s | 0.35 s | 10–15 MiB/s |
 | WireGuard (via wireproxy and the hub) | 3.1 s | 3.1 s | 2–3 MiB/s |
 | re-read from cache (16 MB PDF) | 16 ms | 16 ms |
