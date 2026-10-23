@@ -23,11 +23,11 @@ pub fn scan(dir: &Path) -> Result<Vec<Entry>> {
         if !meta.is_file() {
             continue;
         }
-        let entry = by_uuid.entry(uuid).or_insert_with(|| Entry { uuid, metadata: Vec::new(), content: None, files: Vec::new() });
+        let entry = by_uuid.entry(uuid).or_insert_with(|| Entry { uuid, metadata: Vec::new(), content: None, files: Vec::new(), pages: Vec::new() });
         match kind {
             FileKind::Metadata => entry.metadata = fs::read(dent.path())?,
             FileKind::Content => entry.content = Some(fs::read(dent.path())?),
-            FileKind::Pdf | FileKind::Epub => {}
+            FileKind::Pdf | FileKind::Epub | FileKind::Pagedata => {}
         }
         let mtime_ms = meta.modified()?.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
         entry.files.push(FileStat { kind, size: meta.len(), mtime_ms });

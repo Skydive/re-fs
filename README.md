@@ -9,15 +9,17 @@ re-fs deploy root@tablet.vpn                      # just copy re-fsd (ssh-only u
 re-fs mount ~/rm --ssh root@tablet.vpn -v         # folder tree; PDFs and EPUBs readable
 re-fs mount ~/rm --ssh root@tablet.vpn --rw       # also mkdir, cp in, mv, rm
 re-fs ls --ssh root@tablet.vpn -l Books           # same tree, no mount
+re-fs push paper.pdf --to Books --usb                # copy in without mounting
 ```
 
-Three crates:
+Four crates:
 
 - **re-proto**: the reMarkable format, the folder tree, naming rules and (soon) the wire
   protocol. No I/O.
 - **re-fsd**: the tablet agent. A static armv7 binary that serves the index and file
   bytes over TCP or `ssh … re-fsd --stdio` and pushes change events.
 - **re-fs**: the client. FUSE mount, local cache, transports, CLI.
+- **re-render**: `.rm` strokes (v5, v6) to PDF and Markdown. Pure.
 
 Format notes: [docs/format.md](docs/format.md). Protocol: [docs/protocol.md](docs/protocol.md).
 
@@ -31,6 +33,7 @@ Format notes: [docs/format.md](docs/format.md). Protocol: [docs/protocol.md](doc
 | M3 PDF/EPUB reads, cache, offline | done |
 | M4 writes (mkdir, copy in, move, trash) | done |
 | M5 TCP over USB / Wi-Fi (ssh-key login) / WireGuard, tablet service | done |
+| M6/M7 notebooks, annotated PDFs, highlights, .rmdoc, views, xattrs, push | done (PDF stroke placement still to check on a real annotated PDF) |
 
 ## Transports
 
@@ -60,6 +63,28 @@ For WireGuard, add to `/home/root/wireproxy/wireproxy.conf` and restart wireprox
 ListenPort = 7745
 Target = 127.0.0.1:7745
 ```
+
+## What's in the mount
+
+```
+~/rm/Books/Paper.pdf               the PDF as imported
+~/rm/Books/Paper.annotated.pdf     … with your strokes and highlights drawn on (if annotated)
+~/rm/Books/Paper.highlights.md     … highlights as Markdown (PDF/EPUB with annotations)
+~/rm/Books/Novel.epub              an EPUB
+~/rm/Notes.pdf                     a notebook, rendered
+~/rm/.trash/                       the tablet's trash
+~/rm/.originals/…                  the folders again, original PDFs/EPUBs only
+~/rm/.rmdoc/…                      the folders again, every document as .rmdoc (lossless, with annotations)
+~/rm/.recent/                      last 50 opened (`ls -lt`: mtime = when last opened)
+~/rm/.pinned/                      favourites
+~/rm/.tags/<tag>/                  documents by tag
+```
+
+Files marked as made by re-fs (`*.annotated.pdf`, notebooks, `.rmdoc`, `.highlights.md`)
+are made the first time they're opened and cached until the document changes. Their
+size shows as 0 until then. `getfattr -d FILE` shows `user.rm.pages`, `user.rm.last_page`,
+`user.rm.tags`, `user.rm.pinned` and `user.rm.uuid`. With `--rw`, only the documents
+themselves (`X.pdf`, `X.epub`, a notebook's `X.pdf`) and the main folders can be changed.
 
 ## Reading files
 

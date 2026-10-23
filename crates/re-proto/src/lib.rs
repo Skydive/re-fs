@@ -4,5 +4,5 @@
 pub mod index;
 pub mod wire;
 
-/// 2: Hello carries a login challenge; Auth.
-pub const PROTO_VERSION: u16 = 2;
+/// 2: Hello carries a login challenge; Auth. 3: page files in the index; ReadPage.
+pub const PROTO_VERSION: u16 = 3;

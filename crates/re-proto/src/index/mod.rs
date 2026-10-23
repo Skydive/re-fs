@@ -12,4 +12,4 @@ pub mod plan;
 #[cfg(feature = "json")]
 pub mod tree;
 
-pub use entry::{Entry, FileKind, FileStat};
+pub use entry::{is_page_file, Entry, FileKind, FileStat, PageFile};

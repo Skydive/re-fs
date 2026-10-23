@@ -34,6 +34,15 @@ pub enum Request {
         len: u32,
         expect_mtime_ms: Option<i64>,
     },
+    /// Bytes of a file in a document's page folder (`name` must pass
+    /// `is_page_file`). Answered like `Read`.
+    ReadPage {
+        uuid: Uuid,
+        name: String,
+        offset: u64,
+        len: u32,
+        expect_mtime_ms: Option<i64>,
+    },
     /// Subscribe to `Event`s on this request id.
     Watch,
     /// Part of a file being uploaded, kept in the agent's staging area under `token`
@@ -158,6 +167,7 @@ mod tests {
             metadata: br#"{"type":"DocumentType","visibleName":"x","parent":""}"#.repeat(20),
             content: Some(b"{}".to_vec()),
             files: vec![FileStat { kind: FileKind::Pdf, size: 123, mtime_ms: 456 }],
+            pages: vec![],
         };
         let blob = compress_entries(&[&e, &e]);
         assert!(blob.len() < 2 * e.metadata.len());

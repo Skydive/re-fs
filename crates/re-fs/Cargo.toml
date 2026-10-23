@@ -7,6 +7,9 @@ license.workspace = true
 
 [dependencies]
 re-proto = { workspace = true, features = ["json"] }
+re-render.workspace = true
+# .rmdoc archives (stored, no compression needed: PDFs and strokes barely shrink).
+zip = { version = "2", default-features = false }
 anyhow.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 clap = { version = "4", features = ["derive"] }

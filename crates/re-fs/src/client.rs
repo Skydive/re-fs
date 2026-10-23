@@ -165,6 +165,14 @@ impl Client {
         }
     }
 
+    /// Bytes of a page-folder file.
+    pub async fn read_page(&self, uuid: Uuid, name: &str, offset: u64, len: u32) -> Result<Vec<u8>, CallError> {
+        match self.call(&Request::ReadPage { uuid, name: name.to_owned(), offset, len, expect_mtime_ms: None }).await? {
+            Reply::Data(d) => Ok(d),
+            Reply::Msg(_) => Err(CallError::Unexpected),
+        }
+    }
+
     pub async fn put_chunk(&self, token: u64, offset: u64, data: Vec<u8>) -> Result<(), CallError> {
         match self.call_msg(&Request::PutChunk { token, offset, data }).await? {
             Response::Ok => Ok(()),

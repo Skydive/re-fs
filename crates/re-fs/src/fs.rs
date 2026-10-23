@@ -13,14 +13,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs,
-    ReplyWrite, Request, TimeOrNow,
+    ReplyWrite, ReplyXattr, Request, TimeOrNow,
 };
 use libc::{EACCES, EBADF, EEXIST, EHOSTDOWN, EINVAL, EISDIR, ENOENT, ENOTDIR, EPERM, EROFS};
 use re_proto::index::parse::ParentRef;
 use re_proto::index::plan::DocKind;
-use re_proto::index::tree::{Node, NodeKind};
+use re_proto::index::tree::{Node, NodeKind, View};
 
 use crate::cache::Key;
+use crate::generate::{self, GenKey};
 use crate::session::Shared;
 use crate::write;
 
@@ -86,13 +87,23 @@ impl ReFs {
 
     fn attr(&self, n: &Node) -> FileAttr {
         let t = |ms: i64| UNIX_EPOCH + Duration::from_millis(ms.max(0) as u64);
-        FileAttr {
+        // Generated files: their size once made, 0 until then (read with direct I/O).
+        let size = match GenKey::of(n) {
+            Some(k) => self.shared.cache.generated_size(&k).unwrap_or(0),
+            None => n.size,
+        };
+        let mut a = FileAttr {
             atime: t(n.mtime_ms),
             mtime: t(n.mtime_ms),
             ctime: t(n.mtime_ms),
             crtime: t(n.ctime_ms),
-            ..self.base_attr(n.ino, n.kind.is_dir(), n.size)
+            ..self.base_attr(n.ino, n.kind.is_dir(), size)
+        };
+        // Only the main tree's own documents and folders can be changed.
+        if !(n.view == View::Main && (n.kind.is_dir() || n.is_primary())) {
+            a.perm &= !0o222;
         }
+        a
     }
 
     fn upload_attr(&self, ino: u64, u: &Upload) -> FileAttr {
@@ -126,12 +137,35 @@ impl ReFs {
         if !self.shared.online.load(Ordering::Relaxed) {
             return Err(EHOSTDOWN);
         }
-        match self.shared.tree.load().node(ino).map(|n| n.kind) {
-            Some(NodeKind::Root | NodeKind::Folder | NodeKind::Trash) => Ok(()),
-            Some(NodeKind::LostFound) => Err(EPERM),
+        match self.shared.tree.load().node(ino).map(|n| (n.kind, n.view)) {
+            Some((NodeKind::Root | NodeKind::Folder | NodeKind::Trash, View::Main)) => Ok(()),
+            Some((NodeKind::LostFound | NodeKind::ViewDir | NodeKind::Folder, _)) => Err(EPERM),
             Some(_) => Err(ENOTDIR),
             None => Err(ENOENT),
         }
+    }
+
+    /// Extended attributes: `user.rm.*` from the tablet's metadata.
+    fn xattrs(n: &Node) -> Vec<(&'static str, String)> {
+        let mut v = Vec::new();
+        if let Some(u) = n.uuid {
+            v.push(("user.rm.uuid", u.to_string()));
+        }
+        if let Some(d) = &n.doc {
+            if let Some(p) = d.pages {
+                v.push(("user.rm.pages", p.to_string()));
+            }
+            if let Some(p) = d.last_page {
+                v.push(("user.rm.last_page", p.to_string()));
+            }
+            if !d.tags.is_empty() {
+                v.push(("user.rm.tags", d.tags.join(",")));
+            }
+            if d.pinned {
+                v.push(("user.rm.pinned", "1".into()));
+            }
+        }
+        v
     }
 }
 
@@ -229,6 +263,30 @@ impl Filesystem for ReFs {
         if n.kind.is_dir() {
             return reply.error(EISDIR);
         }
+        if let Some(gk) = GenKey::of(n) {
+            if self.shared.cache.generated(&gk).is_some() {
+                return reply.opened(0, fuser::consts::FOPEN_DIRECT_IO);
+            }
+            if !self.shared.online.load(Ordering::Relaxed) {
+                return reply.error(EHOSTDOWN);
+            }
+            // Make it now (rendering can take a moment); reads then come from the cache.
+            let (shared, node) = (self.shared.clone(), n.clone());
+            self.rt.spawn(async move {
+                match generate::ensure(&shared, &node).await {
+                    Ok(_) => {
+                        reply.opened(0, fuser::consts::FOPEN_DIRECT_IO);
+                        // Its size is known now; `ls -l` shouldn't keep showing 0.
+                        shared.invalidate_inode(node.ino).await;
+                    }
+                    Err(e) => {
+                        shared.log(format_args!("making {:?}: {e}", node.name));
+                        reply.error(e.errno())
+                    }
+                }
+            });
+            return;
+        }
         let Some(key) = Key::of(n) else { return reply.error(EACCES) };
         // Fail here rather than in read: read errors pass through the page cache,
         // which turns every one of them into EIO.
@@ -255,6 +313,16 @@ impl Filesystem for ReFs {
             };
         }
         let tree = self.shared.tree.load();
+        if let Some(gk) = tree.node(ino).and_then(GenKey::of) {
+            let Some(f) = self.shared.cache.generated(&gk) else { return reply.error(libc::EIO) };
+            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let end = (offset + u64::from(size)).min(len);
+            let mut buf = vec![0u8; end.saturating_sub(offset) as usize];
+            return match f.read_exact_at(&mut buf, offset) {
+                Ok(()) => reply.data(&buf),
+                Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+            };
+        }
         let Some(key) = tree.node(ino).and_then(Key::of) else { return reply.error(ENOENT) };
         // Cached: answer on this thread.
         if let Some(f) = self.shared.cache.complete(&key) {
@@ -398,6 +466,9 @@ impl Filesystem for ReFs {
         let tree = self.shared.tree.load();
         let (Some(name), Some(newname)) = (name.to_str(), newname.to_str().map(str::to_owned)) else { return reply.error(EINVAL) };
         let Some(node) = tree.lookup(parent, name).cloned() else { return reply.error(ENOENT) };
+        if !node.is_primary() {
+            return reply.error(EPERM); // derived files (X.annotated.pdf …) follow their document
+        }
         // No overwriting: replacing a document would orphan its annotations.
         if tree.lookup(newparent, &newname).is_some_and(|t| t.ino != node.ino) {
             return reply.error(EEXIST);
@@ -411,6 +482,32 @@ impl Filesystem for ReFs {
 
     fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         self.remove(parent, name, true, reply);
+    }
+
+    fn getxattr(&mut self, _req: &Request<'_>, ino: u64, name: &OsStr, size: u32, reply: ReplyXattr) {
+        let tree = self.shared.tree.load();
+        let Some(n) = tree.node(ino) else { return reply.error(ENOENT) };
+        let Some((_, v)) = Self::xattrs(n).into_iter().find(|(k, _)| OsStr::new(k) == name) else { return reply.error(libc::ENODATA) };
+        match size {
+            0 => reply.size(v.len() as u32),
+            s if (s as usize) < v.len() => reply.error(libc::ERANGE),
+            _ => reply.data(v.as_bytes()),
+        }
+    }
+
+    fn listxattr(&mut self, _req: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr) {
+        let tree = self.shared.tree.load();
+        let Some(n) = tree.node(ino) else { return reply.error(ENOENT) };
+        let mut names = Vec::new();
+        for (k, _) in Self::xattrs(n) {
+            names.extend_from_slice(k.as_bytes());
+            names.push(0);
+        }
+        match size {
+            0 => reply.size(names.len() as u32),
+            s if (s as usize) < names.len() => reply.error(libc::ERANGE),
+            _ => reply.data(&names),
+        }
     }
 
     fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
@@ -434,6 +531,9 @@ impl ReFs {
         }
         let tree = self.shared.tree.load();
         let Some(node) = name.to_str().and_then(|n| tree.lookup(parent, n)).cloned() else { return reply.error(ENOENT) };
+        if !node.is_primary() {
+            return reply.error(EPERM);
+        }
         match (dir, node.kind.is_dir()) {
             (false, true) => return reply.error(EISDIR),
             (true, false) => return reply.error(ENOTDIR),

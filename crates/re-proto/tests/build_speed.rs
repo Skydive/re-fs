@@ -22,6 +22,7 @@ fn build_speed_on_mirror() {
             metadata: std::fs::read(d.path()).unwrap(),
             content,
             files: vec![FileStat { kind: FileKind::Pdf, size: 1, mtime_ms: 1 }],
+            pages: vec![],
         });
     }
     let t = Instant::now();

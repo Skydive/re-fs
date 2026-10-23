@@ -45,7 +45,7 @@ pub struct Key {
 
 impl Key {
     pub fn of(n: &Node) -> Option<Key> {
-        Some(Key { uuid: n.uuid?, kind: n.kind.data_file()?, mtime_ms: n.data_mtime_ms, size: n.size })
+        Some(Key { uuid: n.uuid?, kind: n.data_file()?, mtime_ms: n.data_mtime_ms, size: n.size })
     }
 
     fn file_name(&self) -> String {
@@ -124,6 +124,10 @@ impl Cache {
             .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache")))
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("re-fs")
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     fn object(&self, key: &Key) -> PathBuf {

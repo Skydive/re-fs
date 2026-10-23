@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use re_proto::index::{Entry, FileKind, FileStat};
+use re_proto::index::{is_page_file, Entry, FileKind, FileStat, PageFile};
 use re_proto::wire::{compress_entries, Op, Plan, Response};
 use uuid::Uuid;
 
@@ -125,7 +125,46 @@ impl Store {
                 Err(e) => return Err(e),
             }
         }
-        Ok(Some(Entry { uuid: *uuid, metadata, content, files }))
+        let mut pages = Vec::new();
+        match fs::read_dir(self.dir.join(uuid.to_string())) {
+            Ok(rd) => {
+                for d in rd.flatten() {
+                    let name = d.file_name().to_string_lossy().into_owned();
+                    if !is_page_file(&name) {
+                        continue;
+                    }
+                    if let Ok(m) = d.metadata() {
+                        if m.is_file() {
+                            pages.push(PageFile { name, size: m.len(), mtime_ms: mtime_ms(&m) });
+                        }
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        pages.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(Some(Entry { uuid: *uuid, metadata, content, files, pages }))
+    }
+
+    /// The page folder of an item, for watching.
+    pub fn page_dir(&self, uuid: &Uuid) -> PathBuf {
+        self.dir.join(uuid.to_string())
+    }
+
+    /// Items that have a page folder.
+    pub fn uuids(&self) -> Vec<Uuid> {
+        self.items.keys().copied().collect()
+    }
+
+    /// Open a page-folder file for a ReadPage.
+    pub fn open_page(&self, uuid: &Uuid, name: &str) -> io::Result<(File, u64, i64)> {
+        if !is_page_file(name) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a page file"));
+        }
+        let f = File::open(self.page_dir(uuid).join(name))?;
+        let m = f.metadata()?;
+        Ok((f, m.len(), mtime_ms(&m)))
     }
 
     /// The whole index, or the delta since `since` if it's from this instance.

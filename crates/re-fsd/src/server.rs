@@ -79,6 +79,14 @@ pub fn run(opts: Options) -> io::Result<()> {
     let started = Instant::now();
     let mut store = Store::open(opts.dir)?;
     log(opts.verbose, format_args!("indexed {} items in {:?}", store.len(), started.elapsed()));
+    // Strokes are saved into each document's page folder; watch those too.
+    let page_mask = WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO | WatchMask::MOVED_FROM | WatchMask::DELETE | WatchMask::CREATE;
+    let mut page_watches: HashMap<inotify::WatchDescriptor, Uuid> = HashMap::new();
+    for u in store.uuids() {
+        if let Ok(wd) = inotify.watches().add(store.page_dir(&u), page_mask) {
+            page_watches.insert(wd, u);
+        }
+    }
 
     let mut listeners = Vec::new();
     for addr in opts.listen {
@@ -142,11 +150,23 @@ pub fn run(opts: Options) -> io::Result<()> {
                     let now = Instant::now();
                     let d = dirty.get_or_insert_with(|| Dirty { uuids: HashSet::new(), all: false, first: now, last: now });
                     d.last = now;
+                    let mut new_dirs = Vec::new();
                     for e in evs {
                         if e.mask.contains(EventMask::Q_OVERFLOW) {
                             d.all = true;
+                        } else if let Some(&u) = page_watches.get(&e.wd) {
+                            d.uuids.insert(u); // a page file changed
                         } else if let Some(u) = e.name.and_then(|n| n.to_str()).and_then(uuid_of) {
                             d.uuids.insert(u);
+                            // A new page folder ("<uuid>" exactly) gets its own watch.
+                            if e.mask.contains(EventMask::ISDIR) && e.name.is_some_and(|n| n.len() == 36) {
+                                new_dirs.push(u);
+                            }
+                        }
+                    }
+                    for u in new_dirs {
+                        if let Ok(wd) = inotify.watches().add(store.page_dir(&u), page_mask) {
+                            page_watches.insert(wd, u);
                         }
                     }
                 },
@@ -352,7 +372,7 @@ fn handle(conn: &mut Conn, store: &mut Store, frame: Frame, effects: &mut Effect
         }
         Request::GetIndex { since } => conn.send(id, &store.index(since)),
         Request::Read { uuid, file, offset, len, expect_mtime_ms } => {
-            if !matches!(file, FileKind::Pdf | FileKind::Epub | FileKind::Metadata | FileKind::Content) {
+            if !matches!(file, FileKind::Pdf | FileKind::Epub | FileKind::Metadata | FileKind::Content | FileKind::Pagedata) {
                 return conn.send(id, &err(ErrorCode::BadRequest, "unreadable file kind".into()));
             }
             match store.open_file(&uuid, file) {
@@ -367,6 +387,18 @@ fn handle(conn: &mut Conn, store: &mut Store, frame: Frame, effects: &mut Effect
                 Err(e) => conn.send(id, &err(ErrorCode::Io, e.to_string())),
             }
         }
+        Request::ReadPage { uuid, name, offset, len, expect_mtime_ms } => match store.open_page(&uuid, &name) {
+            Ok((f, size, mtime)) => {
+                if expect_mtime_ms.is_some_and(|m| m != mtime) {
+                    return conn.send(id, &err(ErrorCode::Changed, format!("mtime is {mtime}")));
+                }
+                let n = size.saturating_sub(offset).min(u64::from(len.min(MAX_READ))) as u32;
+                conn.send_file(id, f, offset, n);
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => conn.send(id, &err(ErrorCode::NotFound, format!("{uuid}/{name}"))),
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput => conn.send(id, &err(ErrorCode::BadRequest, e.to_string())),
+            Err(e) => conn.send(id, &err(ErrorCode::Io, e.to_string())),
+        },
         Request::Watch => {
             conn.watch_id = Some(id);
             conn.send(id, &Response::Event { generation: store.generation() });

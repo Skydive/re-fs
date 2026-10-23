@@ -31,6 +31,7 @@ pub struct Shared {
     pub online: AtomicBool,
     pub notifier: Mutex<Option<fuser::Notifier>>,
     pub cache: Arc<Cache>,
+    pub generator: crate::generate::Generator,
     pub verbose: bool,
 }
 
@@ -45,8 +46,17 @@ impl Shared {
             online: AtomicBool::new(false),
             notifier: Mutex::new(None),
             cache,
+            generator: Default::default(),
             verbose,
         })
+    }
+
+    /// Make the kernel forget an inode's cached attributes and pages.
+    pub async fn invalidate_inode(&self, ino: u64) {
+        let notifier = self.notifier.lock().unwrap().clone();
+        if let Some(n) = notifier {
+            let _ = tokio::task::spawn_blocking(move || n.inval_inode(ino, 0, 0)).await;
+        }
     }
 
     pub fn log(&self, msg: std::fmt::Arguments) {

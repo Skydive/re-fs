@@ -49,6 +49,11 @@ pub struct Metadata {
     pub last_modified: Option<i64>,
     #[serde(default, deserialize_with = "millis")]
     pub created_time: Option<i64>,
+    #[serde(default, deserialize_with = "millis")]
+    pub last_opened: Option<i64>,
+    /// 0-based; -1 or absent when never opened.
+    #[serde(default, deserialize_with = "millis")]
+    pub last_opened_page: Option<i64>,
 }
 
 impl Metadata {
@@ -119,12 +124,34 @@ pub struct Stamped<T> {
     pub value: T,
 }
 
-/// Just the file type of a `.content`, for building the tree. Skips the page
-/// lists, which are most of the bytes, without allocating for them.
+/// What the tree needs from a `.content`: file type, page count, tags. Skips the
+/// page lists, which are most of the bytes, without allocating for them.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentKind {
     pub file_type: Option<FileType>,
+    #[serde(default, deserialize_with = "millis")]
+    pub page_count: Option<i64>,
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+}
+
+/// A document tag. Older files store plain strings, newer ones objects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tag(pub String);
+
+impl<'de> Deserialize<'de> for Tag {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            S(String),
+            O { name: String },
+        }
+        Ok(Tag(match Raw::deserialize(d)? {
+            Raw::S(s) | Raw::O { name: s } => s,
+        }))
+    }
 }
 
 impl ContentKind {
@@ -266,6 +293,15 @@ mod tests {
         let p = c.page_list();
         assert_eq!(p.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["first", "inserted", "second"]);
         assert_eq!(p.iter().map(|p| p.redir).collect::<Vec<_>>(), [Some(0), None, Some(1)]);
+    }
+
+    #[test]
+    fn content_kind_tags_and_counts() {
+        let c = ContentKind::from_slice(br#"{"fileType":"pdf","pageCount":12,"tags":[{"name":"Work","timestamp":1},"old"],"pages":["a"]}"#).unwrap();
+        assert_eq!(c.page_count, Some(12));
+        assert_eq!(c.tags, vec![Tag("Work".into()), Tag("old".into())]);
+        let m = Metadata::from_slice(br#"{"type":"DocumentType","visibleName":"x","lastOpened":"1700","lastOpenedPage":4}"#).unwrap();
+        assert_eq!((m.last_opened, m.last_opened_page), (Some(1700), Some(4)));
     }
 
     #[test]
