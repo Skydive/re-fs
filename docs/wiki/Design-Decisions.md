@@ -276,3 +276,15 @@ and the reason. "User" means the project owner's explicit call.
 ### D43. The client embeds its agent
 - **Why:** `re-fs deploy` installs exactly the agent it was built with (protocol
   versions match).
+
+## Parked
+
+### P1. Annotated PDFs that load while you scroll
+- **Idea:** write `X.annotated.pdf` as a PDF incremental update (the original's bytes
+  unchanged, then a small tail with overlays, updated pages, a new page tree and xref),
+  so reads of the original part are served while it downloads.
+- **Why parked:** needs our own reader for the end of a PDF, xref streams and object
+  streams, plus fallbacks to the full rewrite; a few days of work that mainly helps big
+  PDFs over WireGuard (USB: 1–2 s for 16 MB already). Notebooks don't need it after
+  ReadPages batching.
+- **Plan:** [Plan: incremental PDFs](Plan-Incremental-PDF).

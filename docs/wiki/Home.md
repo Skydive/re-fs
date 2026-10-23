@@ -32,5 +32,6 @@ flowchart LR
 | [Design decisions](Design-Decisions) | Every decision, the alternatives, and why |
 | [Measurements](Measurements) | Benchmarks taken on the real tablet |
 | [Testing](Testing) | What the tests cover and how to run them |
+| [Plan: incremental PDFs](Plan-Incremental-PDF) | Parked: annotated PDFs that load while you scroll (PDF incremental update) |
 
 Repository: `ssh://git@forge.example/user/re-fs.git`.
