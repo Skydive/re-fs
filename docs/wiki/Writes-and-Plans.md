@@ -1,6 +1,6 @@
 # Writes and plans
 
-With `--rw`, filesystem actions on the main tree become edits on the tablet. Each
+Unless the mount is `--ro`, filesystem actions on the main tree become edits on the tablet. Each
 becomes a **plan**: a list of file writes plus preconditions, built by pure, tested
 functions in `re_proto::index::plan`. The agent doesn't parse JSON; it checks the
 preconditions and moves bytes into place.
@@ -66,8 +66,11 @@ locally, 40–100 ms over ssh on the LAN.
 
 - Only PDFs and EPUBs can be copied in; the contents are checked (PDF header, EPUB
   zip whose first entry is the stored `mimetype`). Anything else: `EINVAL`.
-- Existing documents can't be overwritten or edited in place (it would misalign
-  their annotations): `EEXIST`, or `EACCES` from the kernel for read-only files.
+- Existing documents can't be overwritten or edited in place by default (it would
+  lose their annotations): `EEXIST`, or `EACCES` from the kernel for read-only files.
+  With `--overwrite`, a `cp` or `mv` onto a document replaces it: a copy is imported
+  as a new document and the old one is trashed only after the import succeeded; a
+  move renames and trashes the old one in a single plan. Folders are never replaced.
 - The type's extension is shown, not stored: `mv x.pdf y.pdf` stores "y". Another
   extension is kept as typed (`mv x.pdf notes.epub` stores "notes.epub", shown as
   `notes.epub.pdf`).
@@ -92,7 +95,7 @@ notebook's rendered `Z.pdf` embed the document's `.rmdoc` (its `.metadata`,
 `-metadata.json` files) as a standard PDF file attachment named `re-fs.rmdoc`. The
 PDF is otherwise an ordinary PDF; viewers list the attachment, most never show it.
 
-Copying such a PDF into a `--rw` mount (or `re-fs push`) brings back the **original
+Copying such a PDF into a writable mount (or `re-fs push`) brings back the **original
 document**, not a flat PDF: the same pages in the same order, inserted blank pages,
 byte-identical stroke files, and a notebook stays a notebook. The same path imports
 a `.rmdoc` file (from `/.rmdoc`, or exported by reMarkable's apps). The copy is a new

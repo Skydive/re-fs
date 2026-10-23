@@ -146,8 +146,12 @@ and the reason. "User" means the project owner's explicit call.
 ### D23. Upload on `close()`
 - **Why:** `cp` sees failures as close's return value; `release` errors are lost.
 
-### D24. No overwriting documents; renaming to another extension allowed
-- Overwriting would misalign annotations, so it's refused.
+### D24. No overwriting documents by default; renaming to another extension allowed
+- Overwriting would lose annotations, so it's refused by default.
+- **Decision (user, 2026-10-24):** mounts are writable by default (`--ro` to turn
+  off), since the round trip is proven lossless. Overwriting stays off, with
+  `--overwrite` to allow it; the replaced document goes to the trash, after the new
+  one is safely on the tablet.
 - Renaming `x.pdf` to `notes.epub` was first refused; the user asked for it to work,
   so the text is kept in the name and the type's extension still shown
   (`notes.epub.pdf`).

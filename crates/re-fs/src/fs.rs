@@ -1,5 +1,5 @@
 //! The FUSE side. Lookups and listings answer from the in-memory tree snapshot, so
-//! browsing never waits on the network. Writes (with --rw) are handed to tokio and
+//! browsing never waits on the network. Writes (unless --ro) are handed to tokio and
 //! answered once the tablet has applied them (see write.rs).
 
 use std::collections::HashMap;
@@ -53,6 +53,8 @@ struct Upload {
     created: SystemTime,
     /// Set once the tablet has it (or it failed); later flushes repeat the result.
     committed: Option<Result<(), i32>>,
+    /// With --overwrite: the document this copy replaces, trashed once the copy is in.
+    replaces: Option<Node>,
 }
 
 pub struct ReFs {
@@ -72,8 +74,8 @@ impl ReFs {
     }
 
     fn base_attr(&self, ino: u64, dir: bool, size: u64) -> FileAttr {
-        // With --rw directories are writable (mkdir, mv, rm); files never are:
-        // a document is replaced by copying a new one in, not edited in place.
+        // Writable mounts have writable directories (mkdir, mv, rm). Files are only
+        // writable with --overwrite (see `attr`): a copy replaces the whole document.
         let w = if self.shared.writable { 0o200 } else { 0 };
         FileAttr {
             ino,
@@ -111,6 +113,8 @@ impl ReFs {
         // Only the main tree's own documents and folders can be changed.
         if !(n.view == View::Main && (n.kind.is_dir() || n.is_primary())) {
             a.perm &= !0o222;
+        } else if !n.kind.is_dir() && self.shared.overwrite {
+            a.perm |= 0o200; // a copy onto it replaces the document
         }
         a
     }
@@ -137,6 +141,48 @@ impl ReFs {
                 }
             }
         });
+    }
+
+    /// A file being copied in: a new document, or (with --overwrite) one replacing
+    /// `replaces`. Returns the upload's inode, which is also its file handle.
+    fn start_upload(&mut self, parent: u64, name: String, replaces: Option<Node>) -> Result<(u64, FileAttr), i32> {
+        self.writable_dir(parent)?;
+        // Only PDFs and EPUBs can live on the tablet (a .rmdoc becomes one with its strokes).
+        if crate::import::Incoming::from_name(&name).is_none() {
+            return Err(EINVAL);
+        }
+        if let Some(old) = &replaces {
+            // Off by default: replacing a document by accident loses its annotations.
+            if !self.shared.overwrite {
+                return Err(EEXIST);
+            }
+            if !old.is_primary() || old.kind.is_dir() || old.uuid.is_none() {
+                return Err(EPERM);
+            }
+        }
+        let tree = self.shared.tree.load();
+        let parent_ref = match write::parent_ref(&tree, parent) {
+            Ok(ParentRef::Trash) => return Err(EPERM),
+            Ok(p) => p,
+            Err(e) => return Err(e),
+        };
+        let ino = self.next_upload;
+        self.next_upload += 1;
+        let (path, file) = self.shared.cache.staging_file(ino).map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+        let u = Upload {
+            parent: parent_ref,
+            parent_ino: parent,
+            name,
+            path,
+            file: Arc::new(file),
+            size: 0,
+            created: SystemTime::now(),
+            committed: None,
+            replaces,
+        };
+        let attr = self.upload_attr(ino, &u);
+        self.uploads.lock().unwrap().insert(ino, u);
+        Ok((ino, attr))
     }
 
     fn writable_dir(&self, ino: u64) -> Result<(), i32> {
@@ -247,16 +293,24 @@ impl Filesystem for ReFs {
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
-        // Uploads: truncation is real; modes and times are accepted and ignored.
-        if let Some(u) = self.uploads.lock().unwrap().get_mut(&ino) {
+        // Uploads (found by handle when a copy replaces a document): truncation is
+        // real; modes and times are accepted and ignored.
+        let mut uploads = self.uploads.lock().unwrap();
+        let key = _fh.filter(|&fh| fh >= FIRST_UPLOAD_INO).or_else(|| {
+            // open(O_TRUNC) truncates without the handle: the copy replacing this document.
+            uploads.iter().find(|(_, u)| u.committed.is_none() && u.replaces.as_ref().is_some_and(|n| n.ino == ino)).map(|(&k, _)| k)
+        });
+        if let Some(u) = uploads.get_mut(&key.unwrap_or(ino)) {
+            let key = key.unwrap_or(ino);
             if let Some(sz) = size {
                 if let Err(e) = u.file.set_len(sz) {
                     return reply.error(e.raw_os_error().unwrap_or(libc::EIO));
                 }
                 u.size = sz;
             }
-            return reply.attr(&Duration::ZERO, &self.upload_attr(ino, u));
+            return reply.attr(&Duration::ZERO, &self.upload_attr(key, u));
         }
+        drop(uploads);
         // Tablet documents: their size can't change; modes and times (cp -p, touch)
         // are accepted so tools don't fail, and ignored.
         match self.shared.tree.load().node(ino) {
@@ -292,7 +346,18 @@ impl Filesystem for ReFs {
 
     fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         if flags & libc::O_ACCMODE != libc::O_RDONLY {
-            return reply.error(if self.uploads.lock().unwrap().contains_key(&ino) { EBADF } else { EROFS });
+            if self.uploads.lock().unwrap().contains_key(&ino) {
+                return reply.error(EBADF);
+            }
+            // `cp new.pdf existing.pdf`: with --overwrite, a copy replacing the document.
+            let tree = self.shared.tree.load();
+            let Some(n) = tree.node(ino).cloned() else { return reply.error(EROFS) };
+            let parent = tree.parent(&n).ino;
+            return match self.start_upload(parent, n.name.clone(), Some(n)) {
+                Ok((fh, _)) => reply.opened(fh, fuser::consts::FOPEN_DIRECT_IO),
+                Err(EEXIST) => reply.error(EACCES),
+                Err(e) => reply.error(e),
+            };
         }
         if root_file_by_ino(ino).is_some() {
             return reply.opened(0, fuser::consts::FOPEN_KEEP_CACHE);
@@ -392,7 +457,7 @@ impl Filesystem for ReFs {
         });
     }
 
-    // ---- writes (--rw) --------------------------------------------------------
+    // ---- writes (not with --ro) --------------------------------------------------------
 
     fn mkdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, _mode: u32, _umask: u32, reply: ReplyEntry) {
         if let Err(e) = self.writable_dir(parent) {
@@ -416,44 +481,14 @@ impl Filesystem for ReFs {
     }
 
     fn create(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, _mode: u32, _umask: u32, _flags: i32, reply: ReplyCreate) {
-        if let Err(e) = self.writable_dir(parent) {
-            return reply.error(e);
-        }
-        let tree = self.shared.tree.load();
         let Some(name) = name.to_str().map(str::to_owned) else { return reply.error(EINVAL) };
-        // Only PDFs and EPUBs can live on the tablet (a .rmdoc becomes one with its strokes).
-        if crate::import::Incoming::from_name(&name).is_none() {
-            return reply.error(EINVAL);
+        let replaces = self.shared.tree.load().lookup(parent, &name).cloned();
+        match self.start_upload(parent, name, replaces) {
+            Ok((ino, attr)) => reply.created(&Duration::ZERO, &attr, 0, ino, 0), // fh = the upload's inode, so writes find it
+            Err(e) => reply.error(e),
         }
-        if tree.lookup(parent, &name).is_some() {
-            return reply.error(EEXIST);
-        }
-        let parent_ref = match write::parent_ref(&tree, parent) {
-            Ok(ParentRef::Trash) => return reply.error(EPERM),
-            Ok(p) => p,
-            Err(e) => return reply.error(e),
-        };
-        let ino = self.next_upload;
-        self.next_upload += 1;
-        let (path, file) = match self.shared.cache.staging_file(ino) {
-            Ok(x) => x,
-            Err(e) => return reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
-        };
-        let u = Upload {
-            parent: parent_ref,
-            parent_ino: parent,
-            name,
-            path,
-            file: Arc::new(file),
-            size: 0,
-            created: SystemTime::now(),
-            committed: None,
-        };
-        let attr = self.upload_attr(ino, &u);
-        self.uploads.lock().unwrap().insert(ino, u);
-        // fh = the upload's inode, so writes find it.
-        reply.created(&Duration::ZERO, &attr, 0, ino, 0);
     }
+
 
     #[allow(clippy::too_many_arguments)]
     fn write(&mut self, _req: &Request<'_>, _ino: u64, fh: u64, offset: i64, data: &[u8], _wf: u32, _flags: i32, _lock: Option<u64>, reply: ReplyWrite) {
@@ -475,18 +510,23 @@ impl Filesystem for ReFs {
     /// close(): send a copied-in file to the tablet. Errors here reach the
     /// program as close()'s return value, so `cp` reports them.
     fn flush(&mut self, _req: &Request<'_>, _ino: u64, fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
-        let (parent, name, file, size) = {
+        let (parent, name, file, size, replaces) = {
             let uploads = self.uploads.lock().unwrap();
             let Some(u) = uploads.get(&fh) else { return reply.ok() };
             match u.committed {
                 Some(Ok(())) => return reply.ok(),
                 Some(Err(e)) => return reply.error(e),
-                None => (u.parent.clone(), u.name.clone(), u.file.clone(), u.size),
+                None => (u.parent.clone(), u.name.clone(), u.file.clone(), u.size, u.replaces.clone()),
             }
         };
         let (shared, uploads) = (self.shared.clone(), self.uploads.clone());
         self.rt.spawn(async move {
-            let r = write::import(shared, parent, name, file, size).await;
+            let mut r = write::import(shared.clone(), parent, name, file, size).await;
+            // The new copy is on the tablet: only now does the old one go to the trash.
+            if let (Ok(()), Some(old)) = (r, replaces) {
+                shared.log(format_args!("overwrite: {:?} replaced, old copy to the trash", old.name));
+                r = write::trash(shared, old).await;
+            }
             if let Some(u) = uploads.lock().unwrap().get_mut(&fh) {
                 u.committed = Some(r);
             }
@@ -517,11 +557,16 @@ impl Filesystem for ReFs {
         if !node.is_primary() {
             return reply.error(EPERM); // derived files (X.annotated.pdf …) follow their document
         }
-        // No overwriting: replacing a document would orphan its annotations.
-        if tree.lookup(newparent, &newname).is_some_and(|t| t.ino != node.ino) {
-            return reply.error(EEXIST);
+        // No overwriting by default: replacing a document would lose its annotations.
+        // With --overwrite a file may replace a file; the old one goes to the trash.
+        let target = tree.lookup(newparent, &newname).filter(|t| t.ino != node.ino).cloned();
+        match &target {
+            None => {}
+            Some(_) if !self.shared.overwrite => return reply.error(EEXIST),
+            Some(t) if !t.is_primary() || t.kind.is_dir() || node.kind.is_dir() => return reply.error(EEXIST),
+            Some(_) => {}
         }
-        self.spawn_write(reply, write::rename(self.shared.clone(), node, newparent, newname));
+        self.spawn_write(reply, write::rename(self.shared.clone(), node, newparent, newname, target));
     }
 
     fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {

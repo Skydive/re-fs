@@ -9,7 +9,9 @@
 # Copies X.annotated.pdf, a rendered notebook and a .rmdoc out of the mount and
 # back in, and checks each new document has the same page list and
 # byte-identical page files. Also: a plain PDF still imports as a PDF, and a
-# broken .rmdoc is refused with EINVAL.
+# broken .rmdoc is refused with EINVAL. Then the write modes: by default the
+# mount is writable but never replaces a document; --overwrite replaces one (the
+# old copy goes to the trash); --ro refuses writes.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -69,10 +71,17 @@ cp "$rm_fixture" "$x/$nb/$p2.rm"
 "$bin/re-fsd" --dir "$x" --listen "127.0.0.1:$port" --allow-local 127.0.0.1 &
 fsd=$!
 for _ in $(seq 100); do (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 0.1; done
-"$bin/re-fs" mount "$m" --tcp "127.0.0.1:$port" --rw --cache-dir "$t/cache" &
-fs=$!
-for _ in $(seq 100); do [ -e "$m/Paper.pdf" ] && break; sleep 0.1; done
-[ -e "$m/Paper.pdf" ] || { echo "FAIL: mount didn't come up"; exit 1; }
+remount() { # extra re-fs mount options; no options = the default (writable)
+    if [ -n "${fs:-}" ]; then
+        fusermount3 -u "$m" 2>/dev/null || fusermount -u "$m"
+        wait "$fs" 2>/dev/null || true
+    fi
+    "$bin/re-fs" mount "$m" --tcp "127.0.0.1:$port" --cache-dir "$t/cache" "$@" &
+    fs=$!
+    for _ in $(seq 100); do [ -e "$m/Paper.pdf" ] && break; sleep 0.1; done
+    [ -e "$m/Paper.pdf" ] || { echo "FAIL: mount didn't come up"; exit 1; }
+}
+remount
 
 cp "$m/Paper.annotated.pdf" "$t/out/"
 cp "$m/Sketches.pdf" "$t/out/"
@@ -127,4 +136,38 @@ if "Bad" in by_name:
     print("FAIL: Bad.rmdoc made a document"); ok = False
 sys.exit(0 if ok else 1)
 EOF
+
+# Write modes. The default refuses to replace a document, by cp or by mv.
+if cp "$t/out/Sketches.pdf" "$m/Plain.pdf" 2>/dev/null; then echo "FAIL: cp replaced a document by default"; exit 1; fi
+if mv "$m/Sketches back.pdf" "$m/Plain.pdf" 2>/dev/null; then echo "FAIL: mv replaced a document by default"; exit 1; fi
+echo "ok: default mount refuses to overwrite (cp and mv)"
+
+# --overwrite: the copy replaces the document and the old one goes to the trash.
+remount --overwrite
+cp "$t/out/Sketches.pdf" "$m/Plain.pdf"
+mv "$m/Paper rmdoc.pdf" "$m/Paper back.pdf"
+python3 - "$x" <<'EOF'
+import json, os, sys
+x = sys.argv[1]
+docs = [(f[:-9], json.load(open(f"{x}/{f}"))) for f in os.listdir(x) if f.endswith(".metadata")]
+def named(name, trash): return [u for u, m in docs if m["visibleName"] == name and (m["parent"] == "trash") == trash]
+bad = []
+plain = named("Plain", False)
+if len(plain) != 1 or json.load(open(f"{x}/{plain[0]}.content"))["fileType"] != "notebook":
+    bad.append(f"cp: live Plain {plain}")
+if len(named("Plain", True)) != 1:
+    bad.append("cp: the old Plain isn't in the trash")
+if len(named("Paper back", False)) != 1 or len(named("Paper back", True)) != 1 or named("Paper rmdoc", False):
+    bad.append("mv: expected one live and one trashed Paper back")
+for b in bad:
+    print(f"FAIL: --overwrite {b}")
+if not bad:
+    print("ok: --overwrite replaces (cp and mv), old copies in the trash")
+sys.exit(1 if bad else 0)
+EOF
+
+# --ro: nothing can be written.
+remount --ro
+if mkdir "$m/Nope" 2>/dev/null || cp "$t/out/plain.pdf" "$m/Nope.pdf" 2>/dev/null; then echo "FAIL: --ro allowed a write"; exit 1; fi
+echo "ok: --ro refuses writes"
 echo "roundtrip: all ok"

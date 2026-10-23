@@ -3,7 +3,7 @@
 # it's unplugged. For systems without Nix (NixOS users: see the flake's modules).
 #
 #   ./install-usb-automount.sh                          # mount at /run/media/$USER/reMarkable
-#   ./install-usb-automount.sh --mountpoint ~/tablet -- --rw -v
+#   ./install-usb-automount.sh --mountpoint ~/tablet -- --overwrite -v
 #   ./install-usb-automount.sh --uninstall
 #
 # Installs /etc/udev/rules.d/70-re-fs-remarkable.rules (with sudo), for a mount

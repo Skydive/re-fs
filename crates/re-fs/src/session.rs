@@ -31,8 +31,10 @@ pub struct Shared {
     pub entries: ArcSwap<HashMap<Uuid, Entry>>,
     /// Generation of the current tree, for writes waiting to see their result.
     pub generation: tokio::sync::watch::Sender<u64>,
-    /// Mounted with --rw.
+    /// Writable (the default; not with --ro).
     pub writable: bool,
+    /// With --overwrite: copying or moving onto a document replaces it.
+    pub overwrite: bool,
     pub client: ArcSwapOption<Client>,
     pub online: AtomicBool,
     /// Tells the OS filesystem layer what it may have cached that changed.
@@ -42,13 +44,25 @@ pub struct Shared {
     pub verbose: bool,
 }
 
+/// What a mount lets programs change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Writes {
+    /// --ro: nothing.
+    ReadOnly,
+    /// The default: mkdir, copying documents in, mv and rm, never replacing one.
+    NoOverwrite,
+    /// --overwrite: also replace a document by copying or moving onto it.
+    Overwrite,
+}
+
 impl Shared {
-    pub fn new(opts: &TreeOptions, cache: Arc<Cache>, writable: bool, verbose: bool) -> Arc<Self> {
+    pub fn new(opts: &TreeOptions, cache: Arc<Cache>, writes: Writes, verbose: bool) -> Arc<Self> {
         Arc::new(Shared {
             tree: ArcSwap::from_pointee(Tree::build(&[], 0, opts)),
             entries: ArcSwap::from_pointee(HashMap::new()),
             generation: tokio::sync::watch::Sender::new(0),
-            writable,
+            writable: writes != Writes::ReadOnly,
+            overwrite: writes == Writes::Overwrite,
             client: ArcSwapOption::empty(),
             online: AtomicBool::new(false),
             notifier: Mutex::new(None),

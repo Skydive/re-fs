@@ -111,9 +111,17 @@ enum Cmd {
         /// Leave out .originals, .rmdoc, .recent, .pinned and .tags.
         #[arg(long)]
         no_views: bool,
-        /// Allow writes: mkdir, copying PDFs/EPUBs in (or a .rmdoc, or a PDF re-fs made:
-        /// the whole document comes back), mv, and rm (to the tablet's trash).
+        /// Mount read-only. By default the mount is writable: mkdir, copying PDFs/EPUBs
+        /// in (or a .rmdoc, or a PDF re-fs made: the whole document comes back), mv, and
+        /// rm (to the tablet's trash). Existing documents are never replaced.
+        #[arg(long, conflicts_with = "overwrite")]
+        ro: bool,
+        /// Let copying or moving onto an existing document replace it. The old one goes
+        /// to the tablet's trash once the new one is on the tablet. Off by default.
         #[arg(long)]
+        overwrite: bool,
+        /// Writable is the default now; accepted for old command lines.
+        #[arg(long, hide = true, conflicts_with = "ro")]
         rw: bool,
         /// Where downloaded files and the last index are kept [default: ~/.cache/re-fs].
         #[arg(long)]
@@ -189,7 +197,12 @@ enum Cmd {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Mount { mountpoint, remote, hide_notebooks, no_views, rw, cache_dir, cache_mib, verbose } => {
+        Cmd::Mount { mountpoint, remote, hide_notebooks, no_views, ro, overwrite, rw: _, cache_dir, cache_mib, verbose } => {
+            let rw = match (ro, overwrite) {
+                (true, _) => session::Writes::ReadOnly,
+                (false, true) => session::Writes::Overwrite,
+                (false, false) => session::Writes::NoOverwrite,
+            };
             let targets = remote.targets();
             if targets.is_empty() {
                 bail!("give --usb, --tls ADDR, --tcp ADDR and/or --ssh HOST");
@@ -317,7 +330,7 @@ async fn fetch_tree(targets: Vec<Target>, opts: &TreeOptions) -> Result<Tree> {
 }
 
 #[cfg(unix)]
-async fn mount(targets: Vec<Target>, mountpoint: &Path, opts: TreeOptions, cache: Arc<cache::Cache>, rw: bool, verbose: bool) -> Result<()> {
+async fn mount(targets: Vec<Target>, mountpoint: &Path, opts: TreeOptions, cache: Arc<cache::Cache>, rw: session::Writes, verbose: bool) -> Result<()> {
     let shared = session::Shared::new(&opts, cache, rw, verbose);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let via = targets.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
@@ -330,7 +343,7 @@ async fn mount(targets: Vec<Target>, mountpoint: &Path, opts: TreeOptions, cache
     }
     let tree = shared.tree.load();
     let fs = fs::ReFs::new(Arc::clone(&shared), tokio::runtime::Handle::current());
-    let session = fuser::Session::new(fs, mountpoint, &fs::mount_options(rw))
+    let session = fuser::Session::new(fs, mountpoint, &fs::mount_options(rw != session::Writes::ReadOnly))
         .with_context(|| format!("mounting on {}", mountpoint.display()))?;
     *shared.notifier.lock().unwrap() = Some(Arc::new(fs::FuseNotifier(session.notifier())));
     let bg = session.spawn()?;

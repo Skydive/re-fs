@@ -98,4 +98,4 @@ updates, where the static rustls build depends on nothing.
 `mirror/` (gitignored) holds a copy of the tablet's `.metadata`/`.content` files plus
 sparse files with each PDF/EPUB's real size and mtime (see the README). A native
 `re-fsd --dir <copy of mirror> --listen 127.0.0.1:7746` serves it, and
-`re-fs mount --tcp 127.0.0.1:7746` mounts it, including `--rw`.
+`re-fs mount --tcp 127.0.0.1:7746` mounts it, writes included.

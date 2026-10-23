@@ -64,7 +64,7 @@ ssh root@10.11.99.1 /home/root/re-fs/re-fsd --stdio
 
 That starts a fresh re-fsd on the tablet for this mount, speaking the normal re-fs
 protocol over the SSH channel's stdin and stdout. The index, file reads, change events
-and `--rw` writes all go through the same messages as over TCP; only the pipe
+and writes all go through the same messages as over TCP; only the pipe
 underneath differs. When you unmount, SSH closes and that re-fsd exits. It's separate
 from the socket-activated service on port 7745, and both can run at once.
 (`--agent PATH` changes where re-fs looks for the binary.)
@@ -107,7 +107,8 @@ re-fs mount MOUNTPOINT [transports…] [options]
 
 | Option | Effect |
 |---|---|
-| `--rw` | allow `mkdir`, copying PDFs/EPUBs/.rmdoc in, `mv`, and `rm`/`rmdir` (to the tablet's trash); see [Writes and plans](Writes-and-Plans) |
+| `--ro` | read-only. Without it the mount is writable: `mkdir`, copying PDFs/EPUBs/.rmdoc in, `mv`, and `rm`/`rmdir` (to the tablet's trash); see [Writes and plans](Writes-and-Plans). `--rw` is still accepted and does nothing |
+| `--overwrite` | let `cp`/`mv` onto an existing document replace it; the old one goes to the trash once the new one is in. Off by default |
 | `--hide-notebooks` | leave notebooks out |
 | `--no-views` | leave out `.originals`, `.rmdoc`, `.recent`, `.pinned`, `.tags` |
 | `--cache-dir DIR` | where downloaded and generated files and the saved index live (default `~/.cache/re-fs`) |
@@ -118,7 +119,7 @@ re-fs mount MOUNTPOINT [transports…] [options]
 | `-v` | log connections, index updates, generated files and warnings |
 
 PDFs re-fs makes (`X.annotated.pdf`, a notebook's `X.pdf`) carry the whole document
-as an attached `.rmdoc`, so copying one back in with `--rw` restores the document,
+as an attached `.rmdoc`, so copying one back in restores the document,
 strokes and page order included, instead of adding a flat PDF. Edits made to such a
 PDF in another app aren't carried back (the attached original wins), and the PDF is
 larger by roughly the original's size. Details: [Writes and plans](Writes-and-Plans#the-lossless-round-trip).
@@ -150,7 +151,7 @@ imports = [ inputs.re-fs.homeManagerModules.default ];
 services.re-fs.usbMount = {
   enable = true;
   # mountPoint = "/run/media/you/reMarkable";   # the default
-  extraArgs = [ "--rw" ];                       # any other `re-fs mount` options
+  extraArgs = [ "-v" ];                         # any other `re-fs mount` options
 };
 ```
 
@@ -174,7 +175,7 @@ Any systemd distribution works with the files in `deploy/host/`:
 
 ```sh
 deploy/host/install-usb-automount.sh                            # /run/media/$USER/reMarkable
-deploy/host/install-usb-automount.sh --mountpoint ~/tablet -- --rw -v
+deploy/host/install-usb-automount.sh --mountpoint ~/tablet -- --overwrite -v
 deploy/host/install-usb-automount.sh --uninstall
 ```
 
@@ -207,7 +208,7 @@ Any systemd distribution works with the files in `deploy/host/`:
 
 ```sh
 deploy/host/install-usb-automount.sh                            # /run/media/$USER/reMarkable
-deploy/host/install-usb-automount.sh --mountpoint ~/tablet -- --rw -v
+deploy/host/install-usb-automount.sh --mountpoint ~/tablet -- --overwrite -v
 deploy/host/install-usb-automount.sh --uninstall
 ```
 

@@ -105,7 +105,9 @@ pub async fn import(shared: Arc<Shared>, parent: ParentRef, name: String, file: 
     run(&shared, p.plan).await
 }
 
-pub async fn rename(shared: Arc<Shared>, node: Node, new_parent: u64, new_name: String) -> Result<(), Errno> {
+/// mv. With `replaces` (--overwrite), the document at the destination goes to the
+/// trash in the same plan, so the tablet sees one change.
+pub async fn rename(shared: Arc<Shared>, node: Node, new_parent: u64, new_name: String, replaces: Option<Node>) -> Result<(), Errno> {
     let tree = shared.tree.load_full();
     let uuid = node.uuid.ok_or(EBUSY)?;
     let parent = parent_ref(&tree, new_parent)?;
@@ -137,13 +139,20 @@ pub async fn rename(shared: Arc<Shared>, node: Node, new_parent: u64, new_name: 
     let old = Metadata::from_slice(&raw).map_err(|_| EIO)?;
     let parent_change = (old.parent != parent).then_some(&parent);
     let name_change = (node.name != new_name).then_some(visible.as_str());
-    if parent_change.is_none() && name_change.is_none() {
+    if parent_change.is_none() && name_change.is_none() && replaces.is_none() {
         return Ok(());
     }
     let json = plan::edit_metadata(&raw, parent_change, name_change, now_ms()).map_err(|_| EIO)?;
     shared.log(format_args!("rename {:?} → {new_name:?} ({uuid})", node.name));
-    let ops = vec![re_proto::wire::Op::PutJson { uuid, file: FileKind::Metadata, json }];
-    run(&shared, Plan { expect: vec![expect], ops, restart: true }).await
+    let mut expects = vec![expect];
+    let mut ops = vec![re_proto::wire::Op::PutJson { uuid, file: FileKind::Metadata, json }];
+    if let Some(old) = replaces {
+        let (e, op) = trash_op(&shared, &old)?;
+        shared.log(format_args!("overwrite: {:?} replaced, old copy to the trash", old.name));
+        expects.push(e);
+        ops.push(op);
+    }
+    run(&shared, Plan { expect: expects, ops, restart: true }).await
 }
 
 /// rm / rmdir: move to the tablet's trash. Items already in the trash stay there.
@@ -163,10 +172,16 @@ pub async fn trash(shared: Arc<Shared>, node: Node) -> Result<(), Errno> {
             return Err(ENOTEMPTY);
         }
     }
-    let (raw, expect) = expect_unchanged(&shared, uuid)?;
-    let json = plan::edit_metadata(&raw, Some(&ParentRef::Trash), None, now_ms()).map_err(|_| EIO)?;
+    let (expect, op) = trash_op(&shared, &node)?;
     shared.log(format_args!("trash {:?} ({uuid})", node.name));
-    let ops = vec![re_proto::wire::Op::PutJson { uuid, file: FileKind::Metadata, json }];
-    run(&shared, Plan { expect: vec![expect], ops, restart: true }).await
+    run(&shared, Plan { expect: vec![expect], ops: vec![op], restart: true }).await
+}
+
+/// The plan step moving a document to the trash.
+fn trash_op(shared: &Shared, node: &Node) -> Result<(Expect, re_proto::wire::Op), Errno> {
+    let uuid = node.uuid.ok_or(EBUSY)?;
+    let (raw, expect) = expect_unchanged(shared, uuid)?;
+    let json = plan::edit_metadata(&raw, Some(&ParentRef::Trash), None, now_ms()).map_err(|_| EIO)?;
+    Ok((expect, re_proto::wire::Op::PutJson { uuid, file: FileKind::Metadata, json }))
 }
 

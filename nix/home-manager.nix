@@ -30,7 +30,7 @@ in
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      example = [ "--rw" "-v" ];
+      example = [ "--overwrite" "-v" ];
       description = "More `re-fs mount` options.";
     };
   };

@@ -1,4 +1,4 @@
-//! Files copied onto the tablet (`cp` into a `--rw` mount, or `re-fs push`):
+//! Files copied onto the tablet (`cp` into a writable mount, or `re-fs push`):
 //! plain PDFs and EPUBs, and whole documents with their strokes, from a `.rmdoc`
 //! or from a PDF re-fs made (it carries its document's `.rmdoc` as an attachment).
 

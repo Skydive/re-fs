@@ -11,7 +11,7 @@ and `rm` into safe edits on the tablet.
 - PDFs and EPUBs as files, cached locally; notebooks rendered to PDF.
 - `X.annotated.pdf` with your strokes and highlights drawn on, and `X.highlights.md`.
 - Lossless `.rmdoc` copies, plus `.recent`, `.pinned` and `.tags/<tag>` views.
-- Copy PDFs/EPUBs in, move, rename, trash (`--rw`), or `re-fs push` without mounting.
+- Copy PDFs/EPUBs in, move, rename, trash (writable by default, `--ro` to turn off), or `re-fs push` without mounting.
 - Lossless round trip: the PDFs re-fs makes carry the document's `.rmdoc`, so copying
   one back in restores the original with its strokes and page order.
 - USB, Wi-Fi (TLS 1.3 with your ssh key), WireGuard or ssh; works offline from the cache.
@@ -24,7 +24,7 @@ nix build .#re-fs                                   # client (embeds the matchin
 ./result/bin/re-fs deploy root@10.11.99.1 --service # once, over USB: agent, systemd
                                                     # socket, TLS key; pins the tablet key
 ./result/bin/re-fs mount ~/rm --usb --tls tablet.lan --ssh root@tablet.vpn
-./result/bin/re-fs mount ~/rm --usb --rw            # with writes
+./result/bin/re-fs mount ~/rm --usb --ro            # read-only
 ./result/bin/re-fs ls --usb -l Books                # list without mounting
 ./result/bin/re-fs push paper.pdf --to Books --usb  # copy in without mounting
 ./result/bin/re-fs pair root@10.11.99.1             # re-pin the tablet's TLS key
@@ -72,9 +72,11 @@ the first time you open them and cached until the document changes; they show as
 bytes until then. `getfattr -d FILE` shows `user.rm.pages`, `last_page`, `tags`,
 `pinned` and `uuid`.
 
-With `--rw`: `mkdir` makes a folder, copying a PDF/EPUB imports it, `mv` moves or
-renames, `rm`/`rmdir` move to the tablet's trash. Existing documents can't be
-overwritten, and nothing is deleted for good. xochitl restarts once, 3 s after the
+Mounts are writable unless you give `--ro`: `mkdir` makes a folder, copying a
+PDF/EPUB imports it, `mv` moves or renames, `rm`/`rmdir` move to the tablet's trash.
+Existing documents are never overwritten unless you mount with `--overwrite`; then
+a copy or move onto one replaces it and the old one goes to the trash once the new
+one is on the tablet. Nothing is deleted for good. xochitl restarts once, 3 s after the
 last write, so the tablet shows the changes.
 
 ## Transports and security
@@ -110,7 +112,7 @@ ssh root@10.11.99.1 /home/root/re-fs/re-fsd --stdio
 
 That starts a fresh re-fsd on the tablet for this mount, speaking the normal re-fs
 protocol over the SSH channel's stdin and stdout. The index, file reads, change events
-and `--rw` writes all go through the same messages as over TCP. When you unmount, SSH
+and writes all go through the same messages as over TCP. When you unmount, SSH
 closes and that re-fsd exits. It's separate from the socket-activated service on port
 7745, and both can run at once.
 
