@@ -8,6 +8,8 @@ pub mod naming;
 #[cfg(feature = "json")]
 pub mod parse;
 #[cfg(feature = "json")]
+pub mod plan;
+#[cfg(feature = "json")]
 pub mod tree;
 
 pub use entry::{Entry, FileKind, FileStat};

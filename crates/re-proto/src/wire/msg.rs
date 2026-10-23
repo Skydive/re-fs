@@ -28,6 +28,44 @@ pub enum Request {
     },
     /// Subscribe to `Event`s on this request id.
     Watch,
+    /// Part of a file being uploaded, kept in the agent's staging area under `token`
+    /// until an `Apply` moves it into place. Answered by `Ok`.
+    PutChunk {
+        token: u64,
+        offset: u64,
+        data: Vec<u8>,
+    },
+    /// Check the plan's preconditions, then write its files atomically.
+    /// Answered by `Applied`, or `Err(Conflict)` with nothing written.
+    Apply {
+        plan: Plan,
+    },
+}
+
+/// A set of file writes on the tablet, made by the client's planner. The agent
+/// doesn't parse JSON; it only checks preconditions and moves bytes into place.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Plan {
+    pub expect: Vec<Expect>,
+    pub ops: Vec<Op>,
+    /// Restart xochitl afterwards (debounced), so the tablet's UI shows the change.
+    pub restart: bool,
+}
+
+/// The state of an item's `.metadata` the plan was made against: `None` means it
+/// must not exist yet; `Some((mtime_ms, len))` means it must be unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Expect {
+    pub uuid: Uuid,
+    pub metadata: Option<(i64, u64)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Op {
+    /// Write `json` as `<uuid><file>` (`.metadata` or `.content`).
+    PutJson { uuid: Uuid, file: FileKind, json: Vec<u8> },
+    /// Move staged upload `token` to `<uuid><file>` (`.pdf` or `.epub`).
+    PutStaged { uuid: Uuid, file: FileKind, token: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +95,11 @@ pub enum Response {
         code: ErrorCode,
         message: String,
     },
+    Ok,
+    /// The plan is on disk; the index is at `generation` and includes it.
+    Applied {
+        generation: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +110,8 @@ pub enum ErrorCode {
     Changed,
     Io,
     Unsupported,
+    /// An Apply precondition failed: the tablet changed the item first.
+    Conflict,
 }
 
 pub fn compress_entries(entries: &[&Entry]) -> Vec<u8> {

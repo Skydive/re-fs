@@ -18,7 +18,7 @@ use re_proto::PROTO_VERSION;
 use uuid::Uuid;
 
 use crate::conn::{Conn, Io, ReadState};
-use crate::store::{uuid_of, Store};
+use crate::store::{uuid_of, ApplyError, Store};
 
 const INOTIFY: Token = Token(0);
 const STDIN: Token = Token(1);
@@ -38,6 +38,19 @@ pub struct Options<'a> {
     pub stdio: bool,
     pub listen: &'a [SocketAddr],
     pub verbose: bool,
+    /// Run `systemctl restart xochitl` after plans that ask for it.
+    pub restart_xochitl: bool,
+}
+
+/// After the last write that asked for it, wait this long, then restart xochitl
+/// once, so copying many files restarts the UI once.
+const RESTART_AFTER: Duration = Duration::from_secs(3);
+
+/// What handling a request did beyond its reply.
+#[derive(Default)]
+struct Effects {
+    changed: bool,
+    restart: bool,
 }
 
 struct Dirty {
@@ -84,14 +97,13 @@ pub fn run(opts: Options) -> io::Result<()> {
 
     let mut next_conn = FIRST_CONN;
     let mut dirty: Option<Dirty> = None;
+    let mut restart_at: Option<Instant> = None;
     let mut events = Events::with_capacity(64);
     let mut ino_buf = [0u8; 16 * 1024];
 
     loop {
-        let timeout = dirty.as_ref().map(|d| {
-            let due = (d.last + DEBOUNCE).min(d.first + DEBOUNCE_MAX);
-            due.saturating_duration_since(Instant::now())
-        });
+        let due = dirty.as_ref().map(|d| (d.last + DEBOUNCE).min(d.first + DEBOUNCE_MAX));
+        let timeout = [due, restart_at].into_iter().flatten().min().map(|t| t.saturating_duration_since(Instant::now()));
         match poll.poll(&mut events, timeout) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -167,9 +179,16 @@ pub fn run(opts: Options) -> io::Result<()> {
             }
         }
 
-        for k in touched {
+        if restart_at.is_some_and(|t| Instant::now() >= t) {
+            restart_at = None;
+            restart_xochitl(opts.verbose);
+        }
+
+        let mut effects = Effects::default();
+        let mut todo: Vec<usize> = touched.into_iter().collect();
+        while let Some(k) = todo.pop() {
             let Some(conn) = conns.get_mut(&k) else { continue };
-            let closed = match service(conn, &store) {
+            let closed = match service(conn, &mut store, &mut effects) {
                 Ok(open) => !open,
                 Err(e) => {
                     log(true, format_args!("connection error: {e}"));
@@ -182,24 +201,50 @@ pub fn run(opts: Options) -> io::Result<()> {
                     let _ = poll.registry().deregister(s);
                 }
                 if k == STDIO_CONN {
-                    return Ok(()); // the ssh session ended
+                    // The ssh session ended; don't drop a restart that was due.
+                    if restart_at.is_some() || std::mem::take(&mut effects.restart) && opts.restart_xochitl {
+                        restart_xochitl(opts.verbose);
+                    }
+                    return Ok(());
                 }
+            }
+            // A write by one client is news to the others.
+            if std::mem::take(&mut effects.changed) {
+                let ev = Response::Event { generation: store.generation() };
+                for (&other, c) in conns.iter_mut() {
+                    if let Some(id) = c.watch_id {
+                        c.send(id, &ev);
+                        todo.push(other);
+                    }
+                }
+            }
+            if std::mem::take(&mut effects.restart) && opts.restart_xochitl {
+                restart_at = Some(Instant::now() + RESTART_AFTER);
             }
         }
     }
 }
 
+fn restart_xochitl(verbose: bool) {
+    log(verbose, format_args!("restarting xochitl"));
+    match std::process::Command::new("systemctl").args(["restart", "xochitl"]).status() {
+        Ok(s) if s.success() => {}
+        Ok(s) => log(true, format_args!("systemctl restart xochitl: {s}")),
+        Err(e) => log(true, format_args!("systemctl: {e}")),
+    }
+}
+
 /// Read, answer and write for one connection. Ok(false) once it's closed.
-fn service(conn: &mut Conn, store: &Store) -> io::Result<bool> {
+fn service(conn: &mut Conn, store: &mut Store, effects: &mut Effects) -> io::Result<bool> {
     let state = conn.fill()?;
     while let Some(frame) = conn.decoder.next_frame().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))? {
-        handle(conn, store, frame);
+        handle(conn, store, frame, effects);
     }
     let drained = conn.flush()?;
     Ok(!matches!(state, ReadState::Eof) || !drained)
 }
 
-fn handle(conn: &mut Conn, store: &Store, frame: Frame) {
+fn handle(conn: &mut Conn, store: &mut Store, frame: Frame, effects: &mut Effects) {
     let id = frame.req_id;
     let err = |code, message: String| Response::Err { code, message };
     if frame.kind != FrameKind::Msg {
@@ -244,6 +289,23 @@ fn handle(conn: &mut Conn, store: &Store, frame: Frame) {
         Request::Watch => {
             conn.watch_id = Some(id);
             conn.send(id, &Response::Event { generation: store.generation() });
+        }
+        Request::PutChunk { token, offset, data } => match store.put_chunk(token, offset, &data) {
+            Ok(()) => conn.send(id, &Response::Ok),
+            Err(e) => conn.send(id, &err(ErrorCode::Io, e.to_string())),
+        },
+        Request::Apply { plan } => {
+            let before = store.generation();
+            match store.apply(&plan) {
+                Ok(generation) => {
+                    effects.changed |= generation != before;
+                    effects.restart |= plan.restart;
+                    conn.send(id, &Response::Applied { generation });
+                }
+                Err(ApplyError::Conflict(u)) => conn.send(id, &err(ErrorCode::Conflict, format!("{u} changed on the tablet"))),
+                Err(ApplyError::Bad(m)) => conn.send(id, &err(ErrorCode::BadRequest, m)),
+                Err(ApplyError::Io(e)) => conn.send(id, &err(ErrorCode::Io, e.to_string())),
+            }
         }
     }
 }

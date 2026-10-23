@@ -16,7 +16,7 @@ mod codec;
 mod msg;
 
 pub use codec::{encode_data_header, encode_msg, Frame, FrameDecoder, FrameKind, HEADER_LEN, MAX_FRAME};
-pub use msg::{compress_entries, decompress_entries, ErrorCode, Request, Response, MAX_READ};
+pub use msg::{compress_entries, decompress_entries, ErrorCode, Expect, Op, Plan, Request, Response, MAX_READ};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {

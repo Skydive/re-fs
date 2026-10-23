@@ -5,6 +5,7 @@ A FUSE filesystem that shows a reMarkable 2's documents as their real folder tre
 ```
 re-fs deploy root@tablet.vpn                      # once: copy re-fsd to the tablet
 re-fs mount ~/rm --ssh root@tablet.vpn -v         # folder tree; PDFs and EPUBs readable
+re-fs mount ~/rm --ssh root@tablet.vpn --rw       # also mkdir, cp in, mv, rm
 re-fs ls --ssh root@tablet.vpn -l Books           # same tree, no mount
 ```
 
@@ -26,8 +27,8 @@ Format notes: [docs/format.md](docs/format.md). Protocol: [docs/protocol.md](doc
 | M1 index, tree and naming; `re-fs ls` on a mirror | done |
 | M2 re-fsd agent + read-only FUSE folder tree | done |
 | M3 PDF/EPUB reads, cache, offline | done |
-| M4 writes (mkdir, copy in, move, trash) | next |
-| M5 USB / LAN / WireGuard transports | |
+| M4 writes (mkdir, copy in, move, trash) | done |
+| M5 USB / LAN / WireGuard transports, tablet service | next |
 
 ## Reading files
 
@@ -40,6 +41,29 @@ keeps its page cache until the file changes on the tablet.
 The last index is kept in `~/.cache/re-fs/index.zstd`. If the tablet can't be reached,
 `re-fs mount` mounts that index read-only: cached files open, others fail with
 "Host is down". It reconnects in the background (backoff up to 30 s).
+
+## Writing (`--rw`)
+
+| On your machine | On the tablet |
+|---|---|
+| `mkdir A` | new folder (`.metadata` + `.content`) |
+| `cp x.pdf A/`, `cp y.epub A/` | new document: the file, a `.content`, then the `.metadata` |
+| `mv A/x.pdf B/y.pdf` | `.metadata`: new `parent` and `visibleName` |
+| `rm A/x.pdf`, `rmdir A` | `.metadata`: `parent = "trash"` (restore from the tablet's trash) |
+
+- Only PDFs and EPUBs can be copied in. The file's contents are checked, not just
+  its name. Anything else fails with "Invalid argument".
+- Existing documents can't be overwritten or edited in place (that would misalign
+  their annotations). Copy in a new one instead.
+- A document's extension is its type: `mv x.pdf x.epub` is refused.
+- `rmdir` refuses folders that still hold anything, including notebooks that
+  aren't shown yet.
+- Items already in `.trash` can't be deleted for good from here.
+- Each write is applied atomically by the agent and refused if the tablet changed
+  the item first. A write returns once the mount shows its result: about 10 ms
+  locally, 40–100 ms over ssh on the LAN.
+- xochitl restarts once, 3 s after the last write, so the tablet's UI picks up the
+  changes.
 
 ## Building
 

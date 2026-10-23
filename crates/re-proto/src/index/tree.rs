@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::entry::{Entry, FileKind};
 use super::ino;
 use super::naming;
-use super::parse::{Content, FileType, ItemType, Metadata, ParentRef};
+use super::parse::{ContentKind, FileType, ItemType, Metadata, ParentRef};
 
 pub type NodeId = usize;
 
@@ -339,7 +339,7 @@ fn parse_items(entries: &[Entry], opts: &TreeOptions, warnings: &mut Vec<String>
         let kind = match meta.item_type {
             ItemType::Folder => NodeKind::Folder,
             ItemType::Document => {
-                let ft = match e.content.as_deref().map(Content::from_slice) {
+                let ft = match e.content.as_deref().map(ContentKind::from_slice) {
                     Some(Ok(c)) => c.file_type,
                     Some(Err(err)) => {
                         warnings.push(format!("{}: bad .content: {err}", e.uuid));

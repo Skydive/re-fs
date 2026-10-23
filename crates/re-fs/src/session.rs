@@ -21,6 +21,12 @@ use crate::transport::{self, Target};
 
 pub struct Shared {
     pub tree: ArcSwap<Tree>,
+    /// The raw entries the tree was built from (writes edit their JSON).
+    pub entries: ArcSwap<HashMap<Uuid, Entry>>,
+    /// Generation of the current tree, for writes waiting to see their result.
+    pub generation: tokio::sync::watch::Sender<u64>,
+    /// Mounted with --rw.
+    pub writable: bool,
     pub client: ArcSwapOption<Client>,
     pub online: AtomicBool,
     pub notifier: Mutex<Option<fuser::Notifier>>,
@@ -29,9 +35,12 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn new(opts: &TreeOptions, cache: Arc<Cache>, verbose: bool) -> Arc<Self> {
+    pub fn new(opts: &TreeOptions, cache: Arc<Cache>, writable: bool, verbose: bool) -> Arc<Self> {
         Arc::new(Shared {
             tree: ArcSwap::from_pointee(Tree::build(&[], 0, opts)),
+            entries: ArcSwap::from_pointee(HashMap::new()),
+            generation: tokio::sync::watch::Sender::new(0),
+            writable,
             client: ArcSwapOption::empty(),
             online: AtomicBool::new(false),
             notifier: Mutex::new(None),
@@ -142,10 +151,12 @@ async fn sync(client: &Client, shared: &Shared, opts: &TreeOptions, index: &mut 
         index.entries.insert(e.uuid, e);
     }
     index.at = Some((instance, generation));
-    if changed > 0 {
-        shared.cache.save_index(&index.entries.values().collect::<Vec<_>>());
-    }
     let inval = publish(shared, opts, index, generation);
+    if changed > 0 {
+        // Off the critical path: writes wait for the tree, not for this.
+        let (cache, snapshot) = (shared.cache.clone(), shared.entries.load_full());
+        tokio::task::spawn_blocking(move || cache.save_index(&snapshot.values().collect::<Vec<_>>()));
+    }
     shared.log(format_args!(
         "generation {generation}: {} index, {changed} changed, {n} bytes, {} invalidations, {:?}",
         if full { "full" } else { "delta" },
@@ -164,6 +175,8 @@ fn publish(shared: &Shared, opts: &TreeOptions, index: &Index, generation: u64) 
         shared.log(format_args!("warning: {w}"));
     }
     let old = shared.tree.swap(Arc::new(tree));
+    shared.entries.store(Arc::new(index.entries.clone()));
+    shared.generation.send_replace(generation);
     old.diff(&shared.tree.load())
 }
 

@@ -69,6 +69,7 @@ struct Fetch {
 pub struct Cache {
     dir: PathBuf,
     cap: u64,
+    save_lock: Mutex<()>,
     fetches: Mutex<HashMap<Key, Arc<Fetch>>>,
 }
 
@@ -103,8 +104,18 @@ impl Cache {
         fs::create_dir_all(dir.join("objects"))?;
         // Leftovers from a previous run can't be resumed safely; start them over.
         let _ = fs::remove_dir_all(dir.join("partial"));
+        let _ = fs::remove_dir_all(dir.join("staging"));
         fs::create_dir_all(dir.join("partial"))?;
-        Ok(Arc::new(Cache { dir, cap, fetches: Mutex::new(HashMap::new()) }))
+        Ok(Arc::new(Cache { dir, cap, save_lock: Mutex::new(()), fetches: Mutex::new(HashMap::new()) }))
+    }
+
+    /// A fresh local file to collect an upload in.
+    pub fn staging_file(&self, id: u64) -> io::Result<(PathBuf, File)> {
+        let dir = self.dir.join("staging");
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(id.to_string());
+        let f = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
+        Ok((path, f))
     }
 
     pub fn default_dir() -> PathBuf {
@@ -234,8 +245,9 @@ impl Cache {
 
     /// zstd over postcard `Vec<Entry>`, written atomically.
     pub fn save_index(&self, entries: &[&Entry]) {
+        let _one_at_a_time = self.save_lock.lock().unwrap();
         let Ok(raw) = postcard::to_stdvec(entries) else { return };
-        let Ok(packed) = zstd::encode_all(&raw[..], 9) else { return };
+        let Ok(packed) = zstd::encode_all(&raw[..], 3) else { return };
         let tmp = self.dir.join("index.zstd.tmp");
         if fs::write(&tmp, packed).is_ok() {
             let _ = fs::rename(&tmp, self.dir.join("index.zstd"));

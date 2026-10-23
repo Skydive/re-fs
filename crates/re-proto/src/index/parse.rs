@@ -119,6 +119,20 @@ pub struct Stamped<T> {
     pub value: T,
 }
 
+/// Just the file type of a `.content`, for building the tree. Skips the page
+/// lists, which are most of the bytes, without allocating for them.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentKind {
+    pub file_type: Option<FileType>,
+}
+
+impl ContentKind {
+    pub fn from_slice(json: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(json)
+    }
+}
+
 impl Content {
     pub fn from_slice(json: &[u8]) -> serde_json::Result<Self> {
         serde_json::from_slice(json)

@@ -25,9 +25,24 @@ after a `Watch` carry the Watch's `req_id`.
 | `GetIndex { since: Option<(instance, generation)> }` | `Index { instance, generation, full, removed, entries }` |
 | `Read { uuid, file, offset, len, expect_mtime_ms }` | a data frame (shorter at EOF), or `Err(Changed / NotFound)` |
 | `Watch` | `Event { generation }` now, then on every change |
+| `PutChunk { token, offset, data }` | `Ok`. The bytes go to `../.re-fs-staging/<token>` beside xochitl/ |
+| `Apply { plan }` | `Applied { generation }`, or `Err(Conflict)` with nothing written |
+
+## Plans
+
+`Plan { expect, ops, restart }`, built by `re_proto::index::plan`:
+
+- `expect`: for each item touched, its `.metadata` (mtime, size) as the client last
+  saw it, or `None` for "must not exist". Any mismatch → `Conflict`.
+- `ops`: `PutJson { uuid, file: .metadata|.content, json }` and
+  `PutStaged { uuid, file: .pdf|.epub, token }`. They are applied data files first,
+  then `.content`, then `.metadata`, each via a temporary file and rename, so an item
+  appears only once it's complete.
+- `restart`: restart xochitl 3 s after the last such plan, only when serving the
+  real xochitl directory.
 
 Errors are `Err { code, message }`, where `code` is one of BadRequest, NotFound,
-Changed, Io or Unsupported.
+Changed, Io, Unsupported or Conflict.
 
 ## Index
 

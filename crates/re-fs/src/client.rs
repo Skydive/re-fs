@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use re_proto::wire::{encode_msg, ErrorCode, FrameDecoder, FrameKind, Request, Response};
+use re_proto::wire::{encode_msg, ErrorCode, FrameDecoder, FrameKind, Plan, Request, Response};
 use re_proto::index::FileKind;
 use re_proto::PROTO_VERSION;
 use uuid::Uuid;
@@ -162,6 +162,21 @@ impl Client {
         match self.call(&Request::Read { uuid, file, offset, len, expect_mtime_ms }).await? {
             Reply::Data(d) => Ok(d),
             Reply::Msg(_) => Err(CallError::Unexpected),
+        }
+    }
+
+    pub async fn put_chunk(&self, token: u64, offset: u64, data: Vec<u8>) -> Result<(), CallError> {
+        match self.call_msg(&Request::PutChunk { token, offset, data }).await? {
+            Response::Ok => Ok(()),
+            _ => Err(CallError::Unexpected),
+        }
+    }
+
+    /// Apply a plan; returns the generation that includes it.
+    pub async fn apply(&self, plan: Plan) -> Result<u64, CallError> {
+        match self.call_msg(&Request::Apply { plan }).await? {
+            Response::Applied { generation } => Ok(generation),
+            _ => Err(CallError::Unexpected),
         }
     }
 

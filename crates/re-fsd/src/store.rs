@@ -8,11 +8,13 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use re_proto::index::{Entry, FileKind, FileStat};
-use re_proto::wire::{compress_entries, Response};
+use re_proto::wire::{compress_entries, Op, Plan, Response};
 use uuid::Uuid;
 
 pub struct Store {
     dir: PathBuf,
+    /// Uploads waiting for an Apply; beside xochitl/ so moving them in is a rename.
+    staging: PathBuf,
     instance: u64,
     generation: u64,
     items: HashMap<Uuid, (Entry, u64)>,
@@ -32,8 +34,12 @@ pub fn uuid_of(name: &str) -> Option<Uuid> {
 impl Store {
     pub fn open(dir: &Path) -> io::Result<Self> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let staging = dir.parent().unwrap_or(dir).join(".re-fs-staging");
+        // Uploads from an earlier run were never applied.
+        let _ = fs::remove_dir_all(&staging);
         let mut store = Store {
             dir: dir.to_owned(),
+            staging,
             instance: (now.as_nanos() as u64) ^ (u64::from(std::process::id()) << 32),
             generation: 1,
             items: HashMap::new(),
@@ -142,11 +148,95 @@ impl Store {
         }
     }
 
+    pub fn put_chunk(&self, token: u64, offset: u64, data: &[u8]) -> io::Result<()> {
+        use std::os::unix::fs::FileExt;
+        fs::create_dir_all(&self.staging)?;
+        let f = fs::OpenOptions::new().write(true).create(true).truncate(false).open(self.staging.join(token.to_string()))?;
+        f.write_all_at(data, offset)
+    }
+
+    /// Check `plan.expect`, then write its ops: data files first, `.content`, and
+    /// `.metadata` last, each via a temporary file and rename, so an item appears
+    /// only once it's complete. Returns the new generation.
+    pub fn apply(&mut self, plan: &Plan) -> Result<u64, ApplyError> {
+        for e in &plan.expect {
+            let actual = match fs::metadata(self.path(&e.uuid, FileKind::Metadata)) {
+                Ok(m) => Some((mtime_ms(&m), m.len())),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+                Err(err) => return Err(err.into()),
+            };
+            if actual != e.metadata {
+                return Err(ApplyError::Conflict(e.uuid));
+            }
+        }
+        let rank = |op: &Op| match op {
+            Op::PutStaged { .. } => 0,
+            Op::PutJson { file: FileKind::Content, .. } => 1,
+            Op::PutJson { .. } => 2,
+        };
+        let mut ops: Vec<&Op> = plan.ops.iter().collect();
+        ops.sort_by_key(|op| rank(op));
+        for op in &ops {
+            match op {
+                Op::PutJson { file: FileKind::Metadata | FileKind::Content, .. } => {}
+                Op::PutStaged { file: FileKind::Pdf | FileKind::Epub, token, .. } => {
+                    if !self.staging.join(token.to_string()).is_file() {
+                        return Err(ApplyError::Bad(format!("no staged upload {token}")));
+                    }
+                }
+                _ => return Err(ApplyError::Bad("op writes a file kind it may not".into())),
+            }
+        }
+        let mut touched = Vec::new();
+        for op in ops {
+            match op {
+                Op::PutJson { uuid, file, json } => {
+                    let dest = self.path(uuid, *file);
+                    let tmp = dest.with_extension(format!("{}.re-fs-tmp", dest.extension().and_then(|e| e.to_str()).unwrap_or("")));
+                    {
+                        use std::io::Write;
+                        let mut f = File::create(&tmp)?;
+                        f.write_all(json)?;
+                        f.sync_all()?;
+                    }
+                    fs::rename(&tmp, &dest)?;
+                    touched.push(*uuid);
+                }
+                Op::PutStaged { uuid, file, token } => {
+                    let src = self.staging.join(token.to_string());
+                    let dest = self.path(uuid, *file);
+                    File::open(&src)?.sync_all()?;
+                    if fs::rename(&src, &dest).is_err() {
+                        // Staging on another filesystem (only in odd test setups).
+                        fs::copy(&src, &dest)?;
+                        fs::remove_file(&src)?;
+                    }
+                    touched.push(*uuid);
+                }
+            }
+        }
+        self.refresh(touched)?;
+        Ok(self.generation)
+    }
+
     /// Open a file for a Read; returns it with its size and mtime.
     pub fn open_file(&self, uuid: &Uuid, kind: FileKind) -> io::Result<(File, u64, i64)> {
         let f = File::open(self.path(uuid, kind))?;
         let m = f.metadata()?;
         Ok((f, m.len(), mtime_ms(&m)))
+    }
+}
+
+#[derive(Debug)]
+pub enum ApplyError {
+    Conflict(Uuid),
+    Bad(String),
+    Io(io::Error),
+}
+
+impl From<io::Error> for ApplyError {
+    fn from(e: io::Error) -> Self {
+        ApplyError::Io(e)
     }
 }
 
@@ -204,5 +294,43 @@ mod tests {
         assert!(full);
         assert_eq!(e.len(), 1);
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn apply_checks_preconditions_and_writes_in_order() {
+        use re_proto::wire::Expect;
+        let d = tmpdir("apply").join("xochitl");
+        fs::create_dir_all(&d).unwrap();
+        let mut s = Store::open(&d).unwrap();
+        let u = Uuid::from_bytes([3; 16]);
+        s.put_chunk(9, 0, b"%PDF-").unwrap();
+        s.put_chunk(9, 5, b"1.7").unwrap();
+        let plan = Plan {
+            expect: vec![Expect { uuid: u, metadata: None }],
+            ops: vec![
+                Op::PutJson { uuid: u, file: FileKind::Metadata, json: b"{}".to_vec() },
+                Op::PutStaged { uuid: u, file: FileKind::Pdf, token: 9 },
+            ],
+            restart: false,
+        };
+        let g = s.apply(&plan).unwrap();
+        assert_eq!(fs::read(d.join(format!("{u}.pdf"))).unwrap(), b"%PDF-1.7");
+        assert_eq!(s.generation(), g);
+        assert_eq!(s.len(), 1);
+        // Same plan again: the item now exists, so "must not exist" fails.
+        assert!(matches!(s.apply(&plan), Err(ApplyError::Conflict(x)) if x == u));
+        // A stale expectation also fails, and writes nothing.
+        let m = fs::metadata(d.join(format!("{u}.metadata"))).unwrap();
+        let stale = Plan {
+            expect: vec![Expect { uuid: u, metadata: Some((mtime_ms(&m), m.len() + 1)) }],
+            ops: vec![Op::PutJson { uuid: u, file: FileKind::Metadata, json: b"{\"x\":1}".to_vec() }],
+            restart: false,
+        };
+        assert!(matches!(s.apply(&stale), Err(ApplyError::Conflict(_))));
+        assert_eq!(fs::read(d.join(format!("{u}.metadata"))).unwrap(), b"{}");
+        // Only metadata/content may be written as JSON.
+        let bad = Plan { expect: vec![], ops: vec![Op::PutJson { uuid: u, file: FileKind::Pdf, json: vec![] }], restart: false };
+        assert!(matches!(s.apply(&bad), Err(ApplyError::Bad(_))));
+        fs::remove_dir_all(d.parent().unwrap()).unwrap();
     }
 }

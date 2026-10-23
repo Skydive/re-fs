@@ -24,7 +24,9 @@ const USAGE: &str = "usage: re-fsd [--dir DIR] [--stdio] [--listen ADDR]... [-v]
 fn main() -> ExitCode {
     match parse() {
         Ok(Some((dir, stdio, listen, verbose))) => {
-            match server::run(server::Options { dir: &dir, stdio, listen: &listen, verbose }) {
+            // Only the real xochitl directory belongs to a running xochitl.
+            let restart_xochitl = dir == std::path::Path::new(DEFAULT_DIR);
+            match server::run(server::Options { dir: &dir, stdio, listen: &listen, verbose, restart_xochitl }) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("re-fsd: {e}");

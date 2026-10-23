@@ -16,3 +16,6 @@ uuid.workspace = true
 thiserror.workspace = true
 postcard.workspace = true
 lz4_flex.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true

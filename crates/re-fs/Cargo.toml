@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 re-proto = { workspace = true, features = ["json"] }
 anyhow.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "io-util", "net", "process", "sync", "time", "macros", "signal"] }
 # Pure-Rust mounting through fusermount3: no libfuse needed at build or run time.
