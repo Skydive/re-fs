@@ -130,6 +130,11 @@
       agentFor = tls: { openssl = re-fsd-armv7; rustls = re-fsd-armv7-rustls; }.${tls};
     in
     {
+      # USB auto-mount: the NixOS module names the tablet's USB network device; the
+      # home-manager module mounts it while it's plugged in. See docs/wiki/Usage.md.
+      nixosModules.default = import ./nix/nixos.nix;
+      homeManagerModules.default = import ./nix/home-manager.nix self;
+
       # For other flakes: the tablet agent by TLS backend, e.g.
       # re-fs.lib.x86_64-linux.agentFor "openssl".
       lib.${system} = { inherit agentFor; };

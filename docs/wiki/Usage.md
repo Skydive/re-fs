@@ -125,6 +125,52 @@ See [Caching and offline](Caching-and-Offline).
 What appears in the mount (each document once, plus generated files and views) is
 described in the repository's README and in [Rendering](Rendering).
 
+## Auto-mount on USB
+
+re-fs can mount the tablet whenever it's plugged in by USB, and unmount it when it's
+unplugged. It's two small pieces from the re-fs flake:
+
+```nix
+# flake inputs
+inputs.re-fs.url = "git+ssh://git@forge.example/user/re-fs.git";
+
+# NixOS configuration: name the tablet's USB network device for systemd
+imports = [ inputs.re-fs.nixosModules.default ];
+services.re-fs.usbDevice.enable = true;
+
+# home-manager configuration: the mount itself
+imports = [ inputs.re-fs.homeManagerModules.default ];
+services.re-fs.usbMount = {
+  enable = true;
+  mountPoint = "/home/you/rm";    # default: ~/rm
+  extraArgs = [ "--rw" ];         # any other `re-fs mount` options
+};
+```
+
+How it works:
+
+1. When the tablet is plugged in, it appears as a USB network card. A udev rule
+   (matching USB id `04b3:4010`; change `vendorId`/`productId` if
+   `udevadm info /sys/class/net/<iface>` says otherwise) gives that interface the
+   systemd name `sys-subsystem-net-devices-remarkable.device`.
+2. The user service `re-fs-usb.service` is `WantedBy` and `BindsTo` that device, so
+   systemd starts it on plug-in and stops it on unplug.
+3. It runs `re-fs wait-usb` first (the interface appears a moment before the tablet's
+   DHCP gives your machine its 10.11.99.x address), then `re-fs mount ~/rm --usb`.
+   Unplugging stops the service; re-fs unmounts on SIGTERM, and a leftover mount is
+   cleared with `fusermount3 -uz` if it was killed instead.
+
+Check it with `systemctl --user status re-fs-usb` and
+`journalctl --user -u re-fs-usb`. It needs the tablet service (`re-fs deploy
+root@10.11.99.1 --service`) once. Don't mount the same mountpoint by hand at the
+same time.
+
+**File manager sidebar:** file managers built on GIO (Nautilus and friends) list mounts
+under `/run/media/$USER/` as removable drives with an eject button. To get that, point
+`mountPoint` at e.g. `/run/media/you/reMarkable` (that directory must exist and belong
+to you). A real gvfs backend would be a C plugin inside GVfs, which isn't worth it for
+a sidebar entry.
+
 ## Without mounting
 
 ```sh
