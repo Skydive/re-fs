@@ -1,0 +1,10 @@
+[package]
+name = "re-render"
+description = "reMarkable stroke files (v5, v6) to PDF: notebooks, annotated PDFs, highlights"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+lopdf = "0.34"
