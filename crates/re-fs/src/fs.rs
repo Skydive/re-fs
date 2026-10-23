@@ -17,7 +17,6 @@ use fuser::{
 };
 use libc::{EACCES, EBADF, EEXIST, EHOSTDOWN, EINVAL, EISDIR, ENOENT, ENOTDIR, EPERM, EROFS};
 use re_proto::index::parse::ParentRef;
-use re_proto::index::plan::DocKind;
 use re_proto::index::tree::{Node, NodeKind, View};
 
 use crate::cache::Key;
@@ -37,7 +36,6 @@ struct Upload {
     parent: ParentRef,
     parent_ino: u64,
     name: String,
-    kind: DocKind,
     path: PathBuf,
     file: Arc<File>,
     size: u64,
@@ -394,8 +392,10 @@ impl Filesystem for ReFs {
         }
         let tree = self.shared.tree.load();
         let Some(name) = name.to_str().map(str::to_owned) else { return reply.error(EINVAL) };
-        // Only PDFs and EPUBs can live on the tablet.
-        let Some(kind) = DocKind::from_name(&name) else { return reply.error(EINVAL) };
+        // Only PDFs and EPUBs can live on the tablet (a .rmdoc becomes one with its strokes).
+        if crate::import::Incoming::from_name(&name).is_none() {
+            return reply.error(EINVAL);
+        }
         if tree.lookup(parent, &name).is_some() {
             return reply.error(EEXIST);
         }
@@ -414,7 +414,6 @@ impl Filesystem for ReFs {
             parent: parent_ref,
             parent_ino: parent,
             name,
-            kind,
             path,
             file: Arc::new(file),
             size: 0,
@@ -447,18 +446,18 @@ impl Filesystem for ReFs {
     /// close(): send a copied-in file to the tablet. Errors here reach the
     /// program as close()'s return value, so `cp` reports them.
     fn flush(&mut self, _req: &Request<'_>, _ino: u64, fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
-        let (parent, name, kind, file, size) = {
+        let (parent, name, file, size) = {
             let uploads = self.uploads.lock().unwrap();
             let Some(u) = uploads.get(&fh) else { return reply.ok() };
             match u.committed {
                 Some(Ok(())) => return reply.ok(),
                 Some(Err(e)) => return reply.error(e),
-                None => (u.parent.clone(), u.name.clone(), u.kind, u.file.clone(), u.size),
+                None => (u.parent.clone(), u.name.clone(), u.file.clone(), u.size),
             }
         };
         let (shared, uploads) = (self.shared.clone(), self.uploads.clone());
         self.rt.spawn(async move {
-            let r = write::import(shared, parent, name, kind, file, size).await;
+            let r = write::import(shared, parent, name, file, size).await;
             if let Some(u) = uploads.lock().unwrap().get_mut(&fh) {
                 u.committed = Some(r);
             }

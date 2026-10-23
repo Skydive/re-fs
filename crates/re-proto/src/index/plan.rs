@@ -151,7 +151,7 @@ mod tests {
     fn json_of(op: &Op) -> &[u8] {
         match op {
             Op::PutJson { json, .. } => json,
-            Op::PutStaged { .. } => panic!("not json"),
+            Op::PutStaged { .. } | Op::PutStagedPage { .. } => panic!("not json"),
         }
     }
 

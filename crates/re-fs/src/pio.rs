@@ -9,11 +9,6 @@ pub fn read_exact_at(f: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-pub fn read_at(f: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-    std::os::unix::fs::FileExt::read_at(f, buf, offset)
-}
-
-#[cfg(unix)]
 pub fn write_all_at(f: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     std::os::unix::fs::FileExt::write_all_at(f, buf, offset)
 }

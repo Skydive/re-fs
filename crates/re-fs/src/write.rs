@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use libc::{EBUSY, EHOSTDOWN, EINVAL, EIO, ENOENT, ENOTEMPTY, EPERM, ETIMEDOUT};
 use re_proto::index::naming;
 use re_proto::index::parse::{Metadata, ParentRef};
-use re_proto::index::plan::{self, DocKind};
+use re_proto::index::plan;
 use re_proto::index::tree::{Node, NodeKind, Tree};
 use re_proto::index::FileKind;
 use re_proto::wire::{ErrorCode, Expect, Plan};
@@ -19,8 +19,6 @@ use crate::session::Shared;
 
 pub type Errno = i32;
 
-/// Upload chunk size.
-const CHUNK: usize = 4 << 20;
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
@@ -86,29 +84,25 @@ pub async fn mkdir(shared: Arc<Shared>, parent: u64, name: String) -> Result<(),
 }
 
 /// Upload a finished local file as a new document.
-pub async fn import(shared: Arc<Shared>, parent: ParentRef, name: String, kind: DocKind, file: Arc<File>, size: u64) -> Result<(), Errno> {
-    let mut head = [0u8; 64];
-    let n = crate::pio::read_at(&file, &mut head, 0).map_err(|_| EIO)?;
-    if !kind.sniff(&head[..n]) {
-        shared.log(format_args!("{name:?} isn't a valid {} file", kind.ext()));
-        return Err(EINVAL);
-    }
+/// Send a copied-in file to the tablet: a PDF/EPUB, or a whole document with its
+/// strokes (a .rmdoc, or a PDF re-fs made, which carries one). See import.rs.
+pub async fn import(shared: Arc<Shared>, parent: ParentRef, name: String, file: Arc<File>, size: u64) -> Result<(), Errno> {
+    let mut data = vec![0u8; size as usize];
+    crate::pio::read_exact_at(&file, &mut data, 0).map_err(|_| EIO)?;
     let c = client(&shared)?;
-    let uuid = Uuid::new_v4();
-    let token = crate::rand_u64();
-    let mut off = 0u64;
-    while off < size {
-        let len = (size - off).min(CHUNK as u64) as usize;
-        let mut buf = vec![0u8; len];
-        crate::pio::read_exact_at(&file, &mut buf, off).map_err(|_| EIO)?;
-        c.put_chunk(token, off, buf).await.map_err(errno)?;
-        off += len as u64;
-    }
-    let base = naming::strip_ext(&name, kind.ext()).unwrap_or(&name);
-    let visible = naming::visible_name(base);
-    let ops = plan::new_document(uuid, &parent, &visible, kind, token, size, now_ms());
-    shared.log(format_args!("import {name:?} ({size} bytes) as {uuid}"));
-    run(&shared, Plan { expect: vec![Expect { uuid, metadata: None }], ops, restart: true }).await
+    let p = match crate::import::prepare(&c, &parent, &name, data).await {
+        Ok(p) => p,
+        Err(e) => {
+            shared.log(format_args!("import {name:?}: {e}"));
+            return Err(match e.kind {
+                crate::import::Failure::Invalid => EINVAL,
+                crate::import::Failure::Down => EHOSTDOWN,
+                crate::import::Failure::Io => EIO,
+            });
+        }
+    };
+    shared.log(format_args!("import {name:?} ({size} bytes, {}) as {}", p.what, p.uuid));
+    run(&shared, p.plan).await
 }
 
 pub async fn rename(shared: Arc<Shared>, node: Node, new_parent: u64, new_name: String) -> Result<(), Errno> {

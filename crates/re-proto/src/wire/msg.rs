@@ -82,10 +82,13 @@ pub struct Expect {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
-    /// Write `json` as `<uuid><file>` (`.metadata` or `.content`).
+    /// Write `json` as `<uuid><file>` (`.metadata`, `.content` or `.pagedata`).
     PutJson { uuid: Uuid, file: FileKind, json: Vec<u8> },
     /// Move staged upload `token` to `<uuid><file>` (`.pdf` or `.epub`).
     PutStaged { uuid: Uuid, file: FileKind, token: u64 },
+    /// Move staged upload `token` into the page folder as `<uuid>/<name>`
+    /// (`name` must pass `is_page_file`; the folder is created).
+    PutStagedPage { uuid: Uuid, name: String, token: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

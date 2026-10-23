@@ -237,16 +237,24 @@ impl Store {
             }
         }
         let rank = |op: &Op| match op {
-            Op::PutStaged { .. } => 0,
-            Op::PutJson { file: FileKind::Content, .. } => 1,
+            Op::PutStaged { .. } | Op::PutStagedPage { .. } => 0,
+            Op::PutJson { file: FileKind::Content | FileKind::Pagedata, .. } => 1,
             Op::PutJson { .. } => 2,
         };
         let mut ops: Vec<&Op> = plan.ops.iter().collect();
         ops.sort_by_key(|op| rank(op));
         for op in &ops {
             match op {
-                Op::PutJson { file: FileKind::Metadata | FileKind::Content, .. } => {}
+                Op::PutJson { file: FileKind::Metadata | FileKind::Content | FileKind::Pagedata, .. } => {}
                 Op::PutStaged { file: FileKind::Pdf | FileKind::Epub, token, .. } => {
+                    if !self.staging.join(token.to_string()).is_file() {
+                        return Err(ApplyError::Bad(format!("no staged upload {token}")));
+                    }
+                }
+                Op::PutStagedPage { name, token, .. } => {
+                    if !is_page_file(name) {
+                        return Err(ApplyError::Bad(format!("not a page file: {name:?}")));
+                    }
                     if !self.staging.join(token.to_string()).is_file() {
                         return Err(ApplyError::Bad(format!("no staged upload {token}")));
                     }
@@ -267,6 +275,18 @@ impl Store {
                         f.sync_all()?;
                     }
                     fs::rename(&tmp, &dest)?;
+                    touched.push(*uuid);
+                }
+                Op::PutStagedPage { uuid, name, token } => {
+                    let dir = self.page_dir(uuid);
+                    fs::create_dir_all(&dir)?;
+                    let src = self.staging.join(token.to_string());
+                    let dest = dir.join(name);
+                    File::open(&src)?.sync_all()?;
+                    if fs::rename(&src, &dest).is_err() {
+                        fs::copy(&src, &dest)?;
+                        fs::remove_file(&src)?;
+                    }
                     touched.push(*uuid);
                 }
                 Op::PutStaged { uuid, file, token } => {
@@ -361,6 +381,44 @@ mod tests {
         assert!(full);
         assert_eq!(e.len(), 1);
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn apply_writes_page_files_and_pagedata() {
+        let d = tmpdir("apply-pages").join("xochitl");
+        fs::create_dir_all(&d).unwrap();
+        let mut s = Store::open(&d).unwrap();
+        let u = Uuid::from_bytes([6; 16]);
+        let page = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f.rm".to_string();
+        s.put_chunk(1, 0, b"strokes").unwrap();
+        let plan = Plan {
+            expect: vec![re_proto::wire::Expect { uuid: u, metadata: None }],
+            ops: vec![
+                Op::PutJson { uuid: u, file: FileKind::Metadata, json: b"{}".to_vec() },
+                Op::PutJson { uuid: u, file: FileKind::Pagedata, json: b"Blank\n".to_vec() },
+                Op::PutStagedPage { uuid: u, name: page.clone(), token: 1 },
+            ],
+            restart: false,
+        };
+        s.apply(&plan).unwrap();
+        assert_eq!(fs::read(d.join(format!("{u}/{page}"))).unwrap(), b"strokes");
+        assert_eq!(fs::read(d.join(format!("{u}.pagedata"))).unwrap(), b"Blank\n");
+        let e = s.items.get(&u).map(|(e, _)| e.clone()).unwrap();
+        assert_eq!(e.pages.len(), 1, "the index lists the new page file");
+        // A name that isn't a page file is refused before anything is written.
+        s.put_chunk(2, 0, b"x").unwrap();
+        let v = Uuid::from_bytes([7; 16]);
+        let bad = Plan {
+            expect: vec![],
+            ops: vec![
+                Op::PutStagedPage { uuid: v, name: "../../evil".into(), token: 2 },
+                Op::PutJson { uuid: v, file: FileKind::Metadata, json: b"{}".to_vec() },
+            ],
+            restart: false,
+        };
+        assert!(matches!(s.apply(&bad), Err(ApplyError::Bad(_))));
+        assert!(!d.join(format!("{v}.metadata")).exists());
+        fs::remove_dir_all(d.parent().unwrap()).unwrap();
     }
 
     #[test]

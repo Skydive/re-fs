@@ -1,4 +1,4 @@
-# re-fs wire protocol (version 4)
+# re-fs wire protocol (version 7)
 
 One byte stream per connection: TCP, or `ssh HOST re-fsd --stdio`. No encryption of
 its own; use WireGuard, USB or ssh for that.
@@ -35,15 +35,25 @@ after a `Watch` carry the Watch's `req_id`.
 
 - `expect`: for each item touched, its `.metadata` (mtime, size) as the client last
   saw it, or `None` for "must not exist". Any mismatch → `Conflict`.
-- `ops`: `PutJson { uuid, file: .metadata|.content, json }` and
-  `PutStaged { uuid, file: .pdf|.epub, token }`. They are applied data files first,
-  then `.content`, then `.metadata`, each via a temporary file and rename, so an item
-  appears only once it's complete.
+- `ops`: `PutJson { uuid, file: .metadata|.content|.pagedata, json }`,
+  `PutStaged { uuid, file: .pdf|.epub, token }` and
+  `PutStagedPage { uuid, name, token }` (into the page folder `<uuid>/`, which is
+  created; `name` must be a page file, `<page-uuid>.rm` or `<page-uuid>-metadata.json`,
+  or the whole plan is refused). They are applied data and page files first, then
+  `.content` and `.pagedata`, then `.metadata`, each via a temporary file and rename,
+  so an item appears only once it's complete.
 - `restart`: restart xochitl 3 s after the last such plan, only when serving the
   real xochitl directory.
 
 Errors are `Err { code, message }`, where `code` is one of BadRequest, NotFound,
 Changed, Io, Unsupported, Conflict or Unauthorized.
+
+## Compatibility
+
+Client and agent must speak the same version: `Hello` with any other `proto` is
+answered `Err(Unsupported)`, so upgrade both together (`re-fs deploy`). Version 7
+added `PutStagedPage` and `.pagedata` in `PutJson`, for importing whole documents;
+a version-6 agent can't decode these plans, which is why the version changed.
 
 ## Transport security
 

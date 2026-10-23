@@ -12,6 +12,8 @@ and `rm` into safe edits on the tablet.
 - `X.annotated.pdf` with your strokes and highlights drawn on, and `X.highlights.md`.
 - Lossless `.rmdoc` copies, plus `.recent`, `.pinned` and `.tags/<tag>` views.
 - Copy PDFs/EPUBs in, move, rename, trash (`--rw`), or `re-fs push` without mounting.
+- Lossless round trip: the PDFs re-fs makes carry the document's `.rmdoc`, so copying
+  one back in restores the original with its strokes and page order.
 - USB, Wi-Fi (TLS 1.3 with your ssh key), WireGuard or ssh; works offline from the cache.
 
 ## Quick start

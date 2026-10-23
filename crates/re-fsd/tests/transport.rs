@@ -247,3 +247,58 @@ fn tls_to_the_wrong_tablet_is_refused() {
     assert!(Client::new(s).exercise().is_err());
     cleanup(&a.dir);
 }
+
+#[test]
+fn a_whole_document_upload_round_trips() {
+    // What importing a .rmdoc sends: staged page files and JSON, in one plan.
+    use re_proto::wire::{Expect, Op, Plan};
+    let (pk, _, _) = client_identity();
+    let a = start("import", &pk);
+    let sock = TcpStream::connect(("127.0.0.1", a.port)).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut c = Client::new(sock);
+    let _: Response = c.call(&Request::Hello { proto: PROTO_VERSION }).unwrap().decode().unwrap();
+    let put = |c: &mut Client<TcpStream>, token: u64, offset: u64, data: &[u8]| {
+        let r: Response = c.call(&Request::PutChunk { token, offset, data: data.to_vec() }).unwrap().decode().unwrap();
+        assert!(matches!(r, Response::Ok), "{r:?}");
+    };
+    let new = Uuid::from_bytes([0xcd; 16]);
+    let strokes: Vec<u8> = (0..200_000u32).map(|i| (i % 249) as u8).collect();
+    for (n, chunk) in strokes.chunks(70_000).enumerate() {
+        put(&mut c, 9, (n * 70_000) as u64, chunk);
+    }
+    put(&mut c, 10, 0, b"{}");
+    let plan = Plan {
+        expect: vec![Expect { uuid: new, metadata: None }],
+        ops: vec![
+            Op::PutStagedPage { uuid: new, name: format!("{PAGE}.rm"), token: 9 },
+            Op::PutStagedPage { uuid: new, name: format!("{PAGE}-metadata.json"), token: 10 },
+            Op::PutJson { uuid: new, file: FileKind::Content, json: format!(r#"{{"fileType":"notebook","cPages":{{"pages":[{{"id":"{PAGE}"}}]}}}}"#).into_bytes() },
+            Op::PutJson { uuid: new, file: FileKind::Pagedata, json: b"Blank\n".to_vec() },
+            Op::PutJson { uuid: new, file: FileKind::Metadata, json: br#"{"type":"DocumentType","visibleName":"New","parent":""}"#.to_vec() },
+        ],
+        restart: false,
+    };
+    let r: Response = c.call(&Request::Apply { plan }).unwrap().decode().unwrap();
+    assert!(matches!(r, Response::Applied { .. }), "{r:?}");
+    let names = vec![format!("{PAGE}.rm"), format!("{PAGE}-metadata.json")];
+    let Response::Pages { pages } = c.call(&Request::ReadPages { uuid: new, names, codec: re_proto::wire::Codec::Zstd }).unwrap().decode().unwrap() else { panic!("no pages") };
+    let pages = re_proto::wire::decompress_pages(&pages).unwrap();
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages.iter().find(|p| p.name.ends_with(".rm")).unwrap().data, strokes);
+    // A path outside the page folder is refused, and nothing is written.
+    put(&mut c, 11, 0, b"x");
+    let other = Uuid::from_bytes([0xce; 16]);
+    let bad = Plan {
+        expect: vec![],
+        ops: vec![
+            Op::PutStagedPage { uuid: other, name: "../x.metadata".into(), token: 11 },
+            Op::PutJson { uuid: other, file: FileKind::Metadata, json: b"{}".to_vec() },
+        ],
+        restart: false,
+    };
+    let r: Response = c.call(&Request::Apply { plan: bad }).unwrap().decode().unwrap();
+    assert!(matches!(r, Response::Err { .. }), "{r:?}");
+    assert!(!a.dir.join(format!("xochitl/{other}.metadata")).exists());
+    cleanup(&a.dir);
+}

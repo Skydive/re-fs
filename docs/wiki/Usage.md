@@ -107,7 +107,7 @@ re-fs mount MOUNTPOINT [transports…] [options]
 
 | Option | Effect |
 |---|---|
-| `--rw` | allow `mkdir`, copying PDFs/EPUBs in, `mv`, and `rm`/`rmdir` (to the tablet's trash); see [Writes and plans](Writes-and-Plans) |
+| `--rw` | allow `mkdir`, copying PDFs/EPUBs/.rmdoc in, `mv`, and `rm`/`rmdir` (to the tablet's trash); see [Writes and plans](Writes-and-Plans) |
 | `--hide-notebooks` | leave notebooks out |
 | `--no-views` | leave out `.originals`, `.rmdoc`, `.recent`, `.pinned`, `.tags` |
 | `--cache-dir DIR` | where downloaded and generated files and the saved index live (default `~/.cache/re-fs`) |
@@ -116,6 +116,12 @@ re-fs mount MOUNTPOINT [transports…] [options]
 | `--port N` | the agent's port for `--usb` (default 7745) |
 | `--agent PATH` | the agent's path on the tablet for `--ssh` |
 | `-v` | log connections, index updates, generated files and warnings |
+
+PDFs re-fs makes (`X.annotated.pdf`, a notebook's `X.pdf`) carry the whole document
+as an attached `.rmdoc`, so copying one back in with `--rw` restores the document,
+strokes and page order included, instead of adding a flat PDF. Edits made to such a
+PDF in another app aren't carried back (the attached original wins), and the PDF is
+larger by roughly the original's size. Details: [Writes and plans](Writes-and-Plans#the-lossless-round-trip).
 
 Unmount with `fusermount3 -u ~/rm` or Ctrl-C; the client exits either way. If no
 transport answers but a saved index exists, the mount comes up offline: cached files
@@ -233,6 +239,7 @@ re-fs ls --usb -R                       # the tree as re-fs shows it
 re-fs ls --usb -l Books                 # sizes, dates, kinds
 re-fs ls --usb --paths -R               # full paths, for scripts
 re-fs push a.pdf b.epub --to Books --usb   # copy in; xochitl restarts once at the end
+re-fs push Paper.annotated.pdf --usb      # a re-fs PDF (or a .rmdoc): the whole document comes back
 re-fs ls --mirror ./mirror -R           # a local copy of the tablet's files, no tablet needed
 ```
 
@@ -248,4 +255,4 @@ re-fs ls --mirror ./mirror -R           # a local copy of the tablet's files, no
 | `connection to the tablet closed` on `--tcp` over Wi-Fi | plain TCP is refused from untrusted addresses; use `--tls` |
 | `agent speaks protocol X, client Y` | client and agent from different builds: run `re-fs deploy` again |
 | `Host is down` when opening a file | offline and that file isn't cached |
-| `Invalid argument` copying a file in | only real PDFs and EPUBs can go on the tablet |
+| `Invalid argument` copying a file in | only real PDFs, EPUBs and .rmdoc files can go on the tablet; a .rmdoc (or a re-fs PDF's attached one) whose files don't check out is refused (`-v` logs why) |

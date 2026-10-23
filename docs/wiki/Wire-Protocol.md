@@ -1,4 +1,4 @@
-# Wire protocol (version 4)
+# Wire protocol (version 7)
 
 One byte stream per connection: plain TCP, TLS 1.3, or `ssh HOST re-fsd --stdio`. The
 protocol inside is the same on all of them.
@@ -48,7 +48,7 @@ changed after that generation plus removed UUIDs. A rename on the tablet arrived
 sequenceDiagram
   participant C as re-fs
   participant A as re-fsd
-  C->>A: Hello{proto: 4}
+  C->>A: Hello{proto: 7}
   A-->>C: Hello{instance, generation}
   C->>A: Watch
   A-->>C: Event{gen 7}
@@ -94,3 +94,6 @@ sequenceDiagram
 | 2 | Hello carried a login challenge; `Auth` (removed in 4) |
 | 3 | page files in the index; `ReadPage`; `.pagedata` |
 | 4 | Wi-Fi uses TLS; the challenge login is gone |
+| 5 | `ReadPages`: several page files in one round trip |
+| 6 | the client picks the codec (none, lz4, zstd) per request; replies are chunked |
+| 7 | `PutStagedPage` and `.pagedata` in `PutJson`: importing whole documents (`.rmdoc`, or a PDF re-fs made) |

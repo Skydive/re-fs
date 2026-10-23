@@ -122,7 +122,10 @@ fn overlay(page: &Page, at: Placement) -> Result<Vec<u8>, Error> {
     Ok(Content { operations: ops }.encode()?)
 }
 
-fn save(mut doc: Document) -> Result<Vec<u8>, Error> {
+fn save(mut doc: Document, attachment: Option<&[u8]>) -> Result<Vec<u8>, Error> {
+    if let Some(a) = attachment {
+        crate::attach::attach(&mut doc, crate::attach::RMDOC_NAME, a)?;
+    }
     doc.compress();
     let mut out = Vec::new();
     doc.save_to(&mut out).map_err(lopdf::Error::IO)?;
@@ -143,6 +146,11 @@ fn canvas_box(page: &Page) -> [f32; 4] {
 /// A notebook: one page per entry (`None` = a blank page), each at least
 /// screen-sized and grown to hold all its strokes.
 pub fn notebook(pages: &[Option<Page>]) -> Result<Vec<u8>, Error> {
+    notebook_with(pages, None)
+}
+
+/// `notebook`, with `rmdoc` (the document's .rmdoc) attached as `re-fs.rmdoc`.
+pub fn notebook_with(pages: &[Option<Page>], rmdoc: Option<&[u8]>) -> Result<Vec<u8>, Error> {
     let mut doc = Document::with_version("1.7");
     let pages_id = doc.new_object_id();
     let res = doc.add_object(dictionary! { "ExtGState" => ext_gstate() });
@@ -162,7 +170,7 @@ pub fn notebook(pages: &[Option<Page>]) -> Result<Vec<u8>, Error> {
     doc.objects.insert(pages_id, Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => count }));
     let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
     doc.trailer.set("Root", catalog);
-    save(doc)
+    save(doc, rmdoc)
 }
 
 /// One page of an annotated document, in the tablet's order.
@@ -299,7 +307,7 @@ fn rebuild_xref(pdf: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Load a PDF, repairing what viewers would.
-fn load_tolerant(pdf: &[u8]) -> Result<Document, Error> {
+pub(crate) fn load_tolerant(pdf: &[u8]) -> Result<Document, Error> {
     let mut first_err = None;
     let mut candidates = repairs(pdf);
     // Last resort: rebuilt cross-reference tables, on the file with its header at 0.
@@ -320,6 +328,11 @@ fn load_tolerant(pdf: &[u8]) -> Result<Document, Error> {
 
 /// The original PDF with strokes drawn on top, pages arranged as on the tablet.
 pub fn annotate(original: &[u8], specs: &[PageSpec]) -> Result<Vec<u8>, Error> {
+    annotate_with(original, specs, None)
+}
+
+/// `annotate`, with `rmdoc` (the document's .rmdoc) attached as `re-fs.rmdoc`.
+pub fn annotate_with(original: &[u8], specs: &[PageSpec], rmdoc: Option<&[u8]>) -> Result<Vec<u8>, Error> {
     let mut doc = load_tolerant(original)?;
     let pages: BTreeMap<u32, ObjectId> = doc.get_pages();
     let root_pages = doc.catalog()?.get(b"Pages")?.as_reference()?;
@@ -403,7 +416,7 @@ pub fn annotate(original: &[u8], specs: &[PageSpec]) -> Result<Vec<u8>, Error> {
     root.set("Kids", kids);
     root.set("Count", count);
     doc.prune_objects();
-    save(doc)
+    save(doc, rmdoc)
 }
 
 #[cfg(test)]

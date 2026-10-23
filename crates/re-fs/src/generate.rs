@@ -34,8 +34,10 @@ impl GenKey {
 
     fn file_name(&self) -> String {
         let v = match self.variant {
-            Variant::Annotated => "annotated.pdf",
-            Variant::Rendered => "rendered.pdf",
+            // "+rmdoc": these now carry the attached .rmdoc; the new names keep
+            // copies cached before that from being served (the cap trims them).
+            Variant::Annotated => "annotated+rmdoc.pdf",
+            Variant::Rendered => "rendered+rmdoc.pdf",
             Variant::Rmdoc => "rmdoc",
             Variant::Highlights => "highlights.md",
             Variant::Original | Variant::Dir => "x",
@@ -187,30 +189,73 @@ async fn fetch_pages(cache: &Cache, client: &Client, e: &Entry, names: &[String]
     Ok(have)
 }
 
-/// Each page in the tablet's order with its original page and parsed strokes.
-async fn pages(cache: &Cache, client: &Client, e: &Entry) -> Result<Vec<PageSpec>, ReadError> {
+/// Each page in the tablet's order with its original page and its strokes,
+/// parsed from the page files in `raw`.
+fn specs_from(e: &Entry, raw: &HashMap<String, Vec<u8>>) -> Result<Vec<PageSpec>, ReadError> {
     let content = e.content.as_deref().map(Content::from_slice).transpose().map_err(|err| ReadError::Failed(format!("bad .content: {err}")))?;
     let list = content.map(|c| c.page_list()).unwrap_or_default();
-    let names: Vec<String> = list.iter().map(|p| format!("{}.rm", p.id)).filter(|n| e.page(n).is_some_and(|f| f.size > 0)).collect();
-    let mut raw = fetch_pages(cache, client, e, &names).await?;
     let mut specs = Vec::with_capacity(list.len());
     for p in list {
         let name = format!("{}.rm", p.id);
-        let strokes = match raw.remove(&name) {
-            Some(raw) => {
-                match re_render::parse(&raw) {
-                    Ok(page) => Some(page),
-                    Err(err) => {
-                        eprintln!("re-fs: {}/{name}: {err}; page left blank", e.uuid);
-                        None
-                    }
+        let strokes = match raw.get(&name).filter(|r| !r.is_empty()) {
+            Some(raw) => match re_render::parse(raw) {
+                Ok(page) => Some(page),
+                Err(err) => {
+                    eprintln!("re-fs: {}/{name}: {err}; page left blank", e.uuid);
+                    None
                 }
-            }
-            _ => None,
+            },
+            None => None,
         };
         specs.push(PageSpec { source: p.redir, strokes });
     }
     Ok(specs)
+}
+
+/// The stroke pages only (for highlights).
+async fn pages(cache: &Cache, client: &Client, e: &Entry) -> Result<Vec<PageSpec>, ReadError> {
+    let names: Vec<String> = e.pages.iter().filter(|p| p.name.ends_with(".rm") && p.size > 0).map(|p| p.name.clone()).collect();
+    specs_from(e, &fetch_pages(cache, client, e, &names).await?)
+}
+
+/// Every file in the page folder (strokes and page metadata).
+async fn all_pages(cache: &Cache, client: &Client, e: &Entry) -> Result<HashMap<String, Vec<u8>>, ReadError> {
+    let names: Vec<String> = e.pages.iter().map(|p| p.name.clone()).collect();
+    fetch_pages(cache, client, e, &names).await
+}
+
+async fn pagedata(client: &Client, e: &Entry) -> Result<Option<Vec<u8>>, ReadError> {
+    match e.stat(FileKind::Pagedata) {
+        Some(st) => Ok(Some(read_all(client, e.uuid, FileKind::Pagedata, st.size).await?)),
+        None => Ok(None),
+    }
+}
+
+/// reMarkable's .rmdoc layout: `<uuid>.metadata`, `.content`, `.pagedata`, the
+/// original, and the page folder, stored (PDFs and strokes barely compress).
+fn zip_rmdoc(e: &Entry, original: Option<(FileKind, &[u8])>, pagedata: Option<&[u8]>, pages: &HashMap<String, Vec<u8>>) -> io::Result<Vec<u8>> {
+    let mut zw = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let mut files: Vec<(String, &[u8])> = vec![(format!("{}.metadata", e.uuid), &e.metadata)];
+    if let Some(c) = &e.content {
+        files.push((format!("{}.content", e.uuid), c));
+    }
+    if let Some(p) = pagedata {
+        files.push((format!("{}.pagedata", e.uuid), p));
+    }
+    if let Some((kind, data)) = original {
+        files.push((format!("{}{}", e.uuid, kind.suffix()), data));
+    }
+    let mut names: Vec<&String> = pages.keys().collect();
+    names.sort();
+    for name in names {
+        files.push((format!("{}/{name}", e.uuid), &pages[name]));
+    }
+    for (name, data) in files {
+        zw.start_file(name, opts).map_err(io::Error::other)?;
+        zw.write_all(data)?;
+    }
+    Ok(zw.finish().map_err(io::Error::other)?.into_inner())
 }
 
 /// Run CPU-heavy rendering off the async workers.
@@ -221,22 +266,40 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, re_render::Er
         .map_err(|e| ReadError::Failed(e.to_string()))
 }
 
+/// A notebook as PDF, with its .rmdoc attached so copying the PDF back into
+/// re-fs restores the notebook with its strokes.
 async fn render_notebook(cache: &Cache, client: &Client, e: &Entry) -> Result<Vec<u8>, ReadError> {
-    let specs = pages(cache, client, e).await?;
-    let pages: Vec<_> = specs.into_iter().map(|s| s.strokes).collect();
-    blocking(move || pdf::notebook(if pages.is_empty() { &[None] } else { &pages })).await
+    let raw = all_pages(cache, client, e).await?;
+    let specs = specs_from(e, &raw)?;
+    let pd = pagedata(client, e).await?;
+    let e = e.clone();
+    blocking(move || {
+        let zip = zip_rmdoc(&e, None, pd.as_deref(), &raw).map_err(|err| re_render::Error::Pdf(err.into()))?;
+        let pages: Vec<_> = specs.into_iter().map(|s| s.strokes).collect();
+        pdf::notebook_with(if pages.is_empty() { &[None] } else { &pages }, Some(&zip))
+    })
+    .await
 }
 
+/// The original PDF with strokes drawn on, and the document's .rmdoc attached
+/// (original, strokes, page order) so copying it back restores the document.
 async fn annotated(shared: &Arc<Shared>, client: &Client, e: &Entry, node: &Node) -> Result<Vec<u8>, ReadError> {
     if node.kind != NodeKind::Pdf {
         return Err(ReadError::Failed("only PDFs can be annotated".into()));
     }
-    let specs = pages(&shared.cache, client, e).await?;
+    let raw = all_pages(&shared.cache, client, e).await?;
+    let specs = specs_from(e, &raw)?;
+    let pd = pagedata(client, e).await?;
     let st = e.stat(FileKind::Pdf).ok_or_else(|| ReadError::Failed("no PDF".into()))?;
     // The original goes through the normal cache, so it's reused for X.pdf too.
     let key = Key { uuid: e.uuid, kind: FileKind::Pdf, mtime_ms: st.mtime_ms, size: st.size };
     let original = shared.cache.read(shared, &key, 0, u32::try_from(st.size).unwrap_or(u32::MAX)).await?;
-    blocking(move || pdf::annotate(&original, &specs)).await
+    let e = e.clone();
+    blocking(move || {
+        let zip = zip_rmdoc(&e, Some((FileKind::Pdf, &original)), pd.as_deref(), &raw).map_err(|err| re_render::Error::Pdf(err.into()))?;
+        pdf::annotate_with(&original, &specs, Some(&zip))
+    })
+    .await
 }
 
 async fn highlights(cache: &Cache, client: &Client, e: &Entry, file_name: &str) -> Result<Vec<u8>, ReadError> {
@@ -249,32 +312,17 @@ async fn highlights(cache: &Cache, client: &Client, e: &Entry, file_name: &str) 
 /// The document's files as reMarkable's .rmdoc: a zip of `<uuid>.metadata`,
 /// `.content`, `.pagedata`, the original, and the page folder.
 async fn rmdoc(cache: &Cache, client: &Client, e: &Entry) -> Result<Vec<u8>, ReadError> {
-    let mut files: Vec<(String, Vec<u8>)> = vec![(format!("{}.metadata", e.uuid), e.metadata.clone())];
-    if let Some(c) = &e.content {
-        files.push((format!("{}.content", e.uuid), c.clone()));
-    }
-    for kind in [FileKind::Pagedata, FileKind::Pdf, FileKind::Epub] {
+    let mut original = None;
+    for kind in [FileKind::Pdf, FileKind::Epub] {
         if let Some(st) = e.stat(kind) {
-            files.push((format!("{}{}", e.uuid, kind.suffix()), read_all(client, e.uuid, kind, st.size).await?));
+            original = Some((kind, read_all(client, e.uuid, kind, st.size).await?));
         }
     }
-    let names: Vec<String> = e.pages.iter().map(|p| p.name.clone()).collect();
-    let mut got = fetch_pages(cache, client, e, &names).await?;
-    for name in names {
-        if let Some(data) = got.remove(&name) {
-            files.push((format!("{}/{name}", e.uuid), data));
-        }
-    }
-    tokio::task::spawn_blocking(move || -> io::Result<Vec<u8>> {
-        let mut zw = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
-        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        for (name, data) in files {
-            zw.start_file(name, opts).map_err(io::Error::other)?;
-            zw.write_all(&data)?;
-        }
-        Ok(zw.finish().map_err(io::Error::other)?.into_inner())
-    })
-    .await
-    .map_err(|e| ReadError::Failed(e.to_string()))?
-    .map_err(ReadError::Io)
+    let pd = pagedata(client, e).await?;
+    let raw = all_pages(cache, client, e).await?;
+    let e = e.clone();
+    tokio::task::spawn_blocking(move || zip_rmdoc(&e, original.as_ref().map(|(k, d)| (*k, d.as_slice())), pd.as_deref(), &raw))
+        .await
+        .map_err(|e| ReadError::Failed(e.to_string()))?
+        .map_err(ReadError::Io)
 }

@@ -3,6 +3,7 @@ mod cache;
 mod client;
 #[cfg(unix)]
 mod fs;
+mod import;
 mod generate;
 mod local;
 mod session;
@@ -110,7 +111,8 @@ enum Cmd {
         /// Leave out .originals, .rmdoc, .recent, .pinned and .tags.
         #[arg(long)]
         no_views: bool,
-        /// Allow writes: mkdir, copying PDFs/EPUBs in, mv, and rm (to the tablet's trash).
+        /// Allow writes: mkdir, copying PDFs/EPUBs in (or a .rmdoc, or a PDF re-fs made:
+        /// the whole document comes back), mv, and rm (to the tablet's trash).
         #[arg(long)]
         rw: bool,
         /// Where downloaded files and the last index are kept [default: ~/.cache/re-fs].
@@ -152,7 +154,7 @@ enum Cmd {
         #[arg(short, long)]
         warnings: bool,
     },
-    /// Copy PDFs/EPUBs onto the tablet without mounting.
+    /// Copy PDFs/EPUBs (or .rmdoc files, or PDFs re-fs made: the whole document) onto the tablet without mounting.
     Push {
         /// Files to send (.pdf or .epub).
         #[arg(required = true)]
@@ -266,10 +268,7 @@ async fn connect_any(targets: &[Target]) -> Result<client::Client> {
 }
 
 async fn push(targets: Vec<Target>, files: &[PathBuf], to: &str) -> Result<()> {
-    use re_proto::index::naming;
     use re_proto::index::parse::ParentRef;
-    use re_proto::index::plan::{self, DocKind};
-    use re_proto::wire::{Expect, Plan};
 
     let c = connect_any(&targets).await?;
     let Response::Index { entries, generation, .. } = c.get_index(None).await? else {
@@ -284,24 +283,14 @@ async fn push(targets: Vec<Target>, files: &[PathBuf], to: &str) -> Result<()> {
     };
     for (i, path) in files.iter().enumerate() {
         let name = path.file_name().and_then(|n| n.to_str()).with_context(|| format!("{}: bad file name", path.display()))?;
-        let kind = DocKind::from_name(name).with_context(|| format!("{name}: only .pdf and .epub can go on the tablet"))?;
         let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-        if !kind.sniff(&data[..data.len().min(64)]) {
-            bail!("{name} isn't a valid {} file", kind.ext());
-        }
-        let uuid = uuid::Uuid::new_v4();
-        let token = rand_u64();
-        for (n, chunk) in data.chunks(4 << 20).enumerate() {
-            c.put_chunk(token, (n * (4 << 20)) as u64, chunk.to_vec()).await?;
-        }
-        let base = naming::strip_ext(name, kind.ext()).unwrap_or(name);
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as i64;
-        let ops = plan::new_document(uuid, &parent, &naming::visible_name(base), kind, token, data.len() as u64, now);
+        let size = data.len();
+        let mut p = import::prepare(&c, &parent, name, data).await.map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
         // Restart xochitl only after the last file.
-        let restart = i + 1 == files.len();
-        c.apply(Plan { expect: vec![Expect { uuid, metadata: None }], ops, restart }).await?;
+        p.plan.restart = i + 1 == files.len();
+        c.apply(p.plan).await?;
         let shown = if to.is_empty() { name.to_owned() } else { format!("{to}/{name}") };
-        eprintln!("re-fs: {shown} ({} bytes)", data.len());
+        eprintln!("re-fs: {shown} ({size} bytes, {})", p.what);
     }
     Ok(())
 }

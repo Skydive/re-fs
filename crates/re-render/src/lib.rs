@@ -2,6 +2,7 @@
 //! `.rm` files (v5 and v6), PDF output for notebooks and annotated PDFs, and
 //! highlights as Markdown. Pure: bytes in, bytes out.
 
+pub mod attach;
 pub mod highlights;
 pub mod model;
 pub mod pdf;
