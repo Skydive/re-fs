@@ -1,0 +1,9 @@
+[package]
+name = "re-fsd"
+description = "reMarkable tablet agent for re-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+re-proto.workspace = true

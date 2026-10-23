@@ -1,0 +1,16 @@
+[package]
+name = "re-proto"
+description = "reMarkable format, tree and wire protocol shared by re-fs and re-fsd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Parsing the tablet's JSON and building the tree. The client enables it; the agent doesn't.
+json = ["dep:serde_json"]
+
+[dependencies]
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+uuid.workspace = true
+thiserror.workspace = true

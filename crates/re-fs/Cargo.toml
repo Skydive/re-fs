@@ -1,0 +1,12 @@
+[package]
+name = "re-fs"
+description = "FUSE view of a reMarkable tablet's documents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+re-proto = { workspace = true, features = ["json"] }
+anyhow.workspace = true
+uuid.workspace = true
+clap = { version = "4", features = ["derive"] }

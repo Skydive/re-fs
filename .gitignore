@@ -1,0 +1,8 @@
+/mirror/
+/cache/
+__pycache__/
+*.pyc
+result
+result-*
+.direnv/
+/target/

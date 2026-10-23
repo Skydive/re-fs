@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["crates/re-proto", "crates/re-fsd", "crates/re-fs"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "ssh://git@forge.example/user/re-fs.git"
+
+[workspace.dependencies]
+re-proto = { path = "crates/re-proto" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# re-fsd runs on a small tablet: optimise for size.
+[profile.release.package.re-fsd]
+opt-level = "s"
+
+[workspace.metadata.crane]
+name = "re-fs"
