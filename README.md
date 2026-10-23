@@ -30,7 +30,7 @@ Format notes: [docs/format.md](docs/format.md). Protocol: [docs/protocol.md](doc
 | M2 re-fsd agent + read-only FUSE folder tree | done |
 | M3 PDF/EPUB reads, cache, offline | done |
 | M4 writes (mkdir, copy in, move, trash) | done |
-| M5 TCP over USB, tablet service | done (WireGuard tunnel: one wireproxy entry, not yet added) |
+| M5 TCP over USB / Wi-Fi (ssh-key login) / WireGuard, tablet service | done |
 
 ## Transports
 
@@ -40,9 +40,14 @@ network interface is up (a USB NIC with a 10.11.99.x address). It stays on which
 link it got until that link drops.
 
 The tablet service (`deploy/re-fsd.service`, installed by `re-fs deploy --service`)
-listens on port 7745 and serves only clients that reach it on 10.11.99.1 (USB) or
-127.0.0.1 (where wireproxy's tunnels end). Wi-Fi peers are refused, since the
-protocol has no encryption of its own. After a reMarkable OS update, run
+listens on port 7745. Clients that reach it on 10.11.99.1 (USB) or 127.0.0.1 (where
+wireproxy's tunnels end) are trusted. Anyone else (Wi-Fi, e.g. `--tcp
+192.168.1.50:7745`) must log in with an ssh key: the agent sends a random
+challenge in its Hello, re-fs signs it with `~/.ssh/id_ed25519` (or `--identity`),
+and the agent accepts the key only if it's an unrestricted ssh-ed25519 line in
+`/home/root/.ssh/authorized_keys`, re-read on every login. Same keys, same
+revocation as ssh. Only the login is signed; data on Wi-Fi isn't encrypted.
+Passphrase-protected keys and ssh-agent aren't supported yet. After a reMarkable OS update, run
 `sh /home/root/re-fs/install.sh` (or add it to `/home/root/wireproxy/reinstall.sh`).
 
 For WireGuard, add to `/home/root/wireproxy/wireproxy.conf` and restart wireproxy:
@@ -127,6 +132,11 @@ tools/check-mirror.sh                                # compare with tools/paths.
 | full index transfer (1.3 MB lz4) | 2.1 s | ~0.3 s |
 | `find` over the mounted tree | 7 ms | 7 ms |
 | a change on the tablet shows in the mount | ~0.3 s (200 ms is debounce) | |
-| first read of a PDF/EPUB | | 12–13 MiB/s (ssh); 23 MiB/s over USB (TCP) |
-| mount over USB (TCP) | | 0.24 s |
+| first read of a PDF/EPUB | | 12–13 MiB/s (ssh); 10–15 MiB/s (TCP) |
+
+| TCP transport (2026-10-23) | `ls -R` | mount | 16 MB PDF |
+|---|---|---|---|
+| USB | 0.23 s | 0.24 s | 23 MiB/s |
+| Wi-Fi LAN, ssh-key login | 0.39 s | 0.35 s | 10–15 MiB/s |
+| WireGuard (via wireproxy and the hub) | 3.1 s | 3.1 s | 2–3 MiB/s |
 | re-read from cache (16 MB PDF) | 16 ms | 16 ms |

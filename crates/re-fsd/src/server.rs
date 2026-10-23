@@ -39,6 +39,8 @@ pub struct Options<'a> {
     pub listen: &'a [SocketAddr],
     /// If non-empty, TCP clients must have reached one of these local addresses.
     pub allow_local: &'a [std::net::IpAddr],
+    /// Accept other TCP clients once they log in with an authorized ssh key.
+    pub ssh_auth: bool,
     pub verbose: bool,
     /// Run `systemctl restart xochitl` after plans that ask for it.
     pub restart_xochitl: bool,
@@ -94,7 +96,7 @@ pub fn run(opts: Options) -> io::Result<()> {
         }
         poll.registry().register(&mut SourceFd(&r.as_raw_fd()), STDIN, Interest::READABLE)?;
         poll.registry().register(&mut SourceFd(&w.as_raw_fd()), STDOUT, Interest::WRITABLE)?;
-        conns.insert(STDIO_CONN, Conn::new(Io::Stdio { r, w }));
+        conns.insert(STDIO_CONN, Conn::new(Io::Stdio { r, w }, true));
     }
 
     let mut next_conn = FIRST_CONN;
@@ -141,7 +143,8 @@ pub fn run(opts: Options) -> io::Result<()> {
                         match l.accept() {
                             Ok((mut s, peer)) => {
                                 let local = s.local_addr().map(|a| a.ip()).ok();
-                                if !opts.allow_local.is_empty() && !local.is_some_and(|ip| opts.allow_local.contains(&ip)) {
+                                let trusted = opts.allow_local.is_empty() || local.is_some_and(|ip| opts.allow_local.contains(&ip));
+                                if !trusted && !opts.ssh_auth {
                                     log(opts.verbose, format_args!("refused {peer} (reached us on {local:?})"));
                                     continue;
                                 }
@@ -150,7 +153,11 @@ pub fn run(opts: Options) -> io::Result<()> {
                                 next_conn += 1;
                                 poll.registry().register(&mut s, Token(tok), Interest::READABLE | Interest::WRITABLE)?;
                                 log(opts.verbose, format_args!("connection from {peer}"));
-                                conns.insert(tok, Conn::new(Io::Tcp(s)));
+                                let mut conn = Conn::new(Io::Tcp(s), trusted);
+                                if !trusted {
+                                    conn.challenge = Some(crate::sshauth::challenge()?);
+                                }
+                                conns.insert(tok, conn);
                                 touched.insert(tok);
                             }
                             Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -248,6 +255,9 @@ fn service(conn: &mut Conn, store: &mut Store, effects: &mut Effects) -> io::Res
         handle(conn, store, frame, effects);
     }
     let drained = conn.flush()?;
+    if conn.closing && drained {
+        return Ok(false);
+    }
     Ok(!matches!(state, ReadState::Eof) || !drained)
 }
 
@@ -261,7 +271,31 @@ fn handle(conn: &mut Conn, store: &mut Store, frame: Frame, effects: &mut Effect
         Ok(r) => r,
         Err(e) => return conn.send(id, &err(ErrorCode::BadRequest, e.to_string())),
     };
+    if conn.closing {
+        return;
+    }
+    if !conn.authed {
+        // Only Hello (which carries the challenge) and Auth until logged in.
+        match &req {
+            Request::Hello { .. } => {}
+            Request::Auth { public_key, signature } => {
+                let challenge = conn.challenge.expect("untrusted connections get a challenge");
+                let msg = re_proto::wire::auth_message(&challenge, store.instance());
+                if crate::sshauth::verify(std::path::Path::new(crate::sshauth::AUTHORIZED_KEYS), public_key, &msg, signature) {
+                    conn.authed = true;
+                    return conn.send(id, &Response::Ok);
+                }
+                conn.closing = true;
+                return conn.send(id, &err(ErrorCode::Unauthorized, "key not in authorized_keys, or bad signature".into()));
+            }
+            _ => {
+                conn.closing = true;
+                return conn.send(id, &err(ErrorCode::Unauthorized, "log in first".into()));
+            }
+        }
+    }
     match req {
+        Request::Auth { .. } => conn.send(id, &Response::Ok),
         Request::Hello { proto } => {
             if proto != PROTO_VERSION {
                 return conn.send(id, &err(ErrorCode::Unsupported, format!("agent speaks protocol {PROTO_VERSION}, client {proto}")));
@@ -273,6 +307,7 @@ fn handle(conn: &mut Conn, store: &mut Store, frame: Frame, effects: &mut Effect
                     agent: format!("re-fsd {}", env!("CARGO_PKG_VERSION")),
                     instance: store.instance(),
                     generation: store.generation(),
+                    challenge: if conn.authed { None } else { conn.challenge },
                 },
             );
         }

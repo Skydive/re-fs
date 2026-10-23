@@ -12,6 +12,14 @@ pub enum Request {
     Hello {
         proto: u16,
     },
+    /// Log in on a connection the agent doesn't trust by address (Wi-Fi): an
+    /// ed25519 key from the tablet's `authorized_keys` and its signature over
+    /// [`auth_message`]. Answered by `Ok`, or `Err(Unauthorized)` and the
+    /// connection is closed.
+    Auth {
+        public_key: [u8; 32],
+        signature: Vec<u8>,
+    },
     /// The whole index, or only what changed after generation `since` of agent
     /// instance `instance` (from Hello). Anything else gets the whole index.
     GetIndex {
@@ -76,6 +84,8 @@ pub enum Response {
         /// Changes on every agent start; generations are only comparable within one.
         instance: u64,
         generation: u64,
+        /// Set when this connection must log in (`Auth`) before anything else.
+        challenge: Option<[u8; 32]>,
     },
     Index {
         instance: u64,
@@ -112,6 +122,17 @@ pub enum ErrorCode {
     Unsupported,
     /// An Apply precondition failed: the tablet changed the item first.
     Conflict,
+    /// This connection must log in first, or the login was refused.
+    Unauthorized,
+}
+
+/// What a client signs to log in: bound to this connection's challenge and this
+/// agent run, so a signature can't be replayed.
+pub fn auth_message(challenge: &[u8; 32], instance: u64) -> Vec<u8> {
+    let mut m = b"re-fs-auth-v1\0".to_vec();
+    m.extend_from_slice(challenge);
+    m.extend_from_slice(&instance.to_le_bytes());
+    m
 }
 
 pub fn compress_entries(entries: &[&Entry]) -> Vec<u8> {

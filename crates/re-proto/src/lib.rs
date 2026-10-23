@@ -4,4 +4,5 @@
 pub mod index;
 pub mod wire;
 
-pub const PROTO_VERSION: u16 = 1;
+/// 2: Hello carries a login challenge; Auth.
+pub const PROTO_VERSION: u16 = 2;

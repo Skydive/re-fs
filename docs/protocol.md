@@ -1,4 +1,4 @@
-# re-fs wire protocol (version 1)
+# re-fs wire protocol (version 2)
 
 One byte stream per connection: TCP, or `ssh HOST re-fsd --stdio`. No encryption of
 its own; use WireGuard, USB or ssh for that.
@@ -21,7 +21,8 @@ after a `Watch` carry the Watch's `req_id`.
 
 | Request | Reply |
 |---|---|
-| `Hello { proto }` | `Hello { proto, agent, instance, generation }` |
+| `Hello { proto }` | `Hello { proto, agent, instance, generation, challenge }` |
+| `Auth { public_key, signature }` | `Ok`, or `Err(Unauthorized)` and the connection closes |
 | `GetIndex { since: Option<(instance, generation)> }` | `Index { instance, generation, full, removed, entries }` |
 | `Read { uuid, file, offset, len, expect_mtime_ms }` | a data frame (shorter at EOF), or `Err(Changed / NotFound)` |
 | `Watch` | `Event { generation }` now, then on every change |
@@ -43,6 +44,14 @@ after a `Watch` carry the Watch's `req_id`.
 
 Errors are `Err { code, message }`, where `code` is one of BadRequest, NotFound,
 Changed, Io, Unsupported or Conflict.
+
+## Login
+
+Connections the agent trusts by address (stdio, `--allow-local` addresses) get no
+challenge. Any other connection (only accepted with `--ssh-auth`) gets a random
+32-byte `challenge` in Hello and may send nothing but `Hello` and `Auth` until it
+logs in: an ed25519 signature over `"re-fs-auth-v1\0" || challenge || instance (u64 LE)`
+by a key listed, without options, in the tablet's `authorized_keys`.
 
 ## Index
 

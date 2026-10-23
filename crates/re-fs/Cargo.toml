@@ -19,3 +19,6 @@ arc-swap = "1"
 postcard.workspace = true
 # The saved index on disk (the wire uses lz4, which suits the tablet better).
 zstd = "0.13"
+ed25519-dalek.workspace = true
+# Reading the OpenSSH private key used to log in over Wi-Fi.
+ssh-key = { version = "0.6", default-features = false, features = ["std", "ed25519"] }

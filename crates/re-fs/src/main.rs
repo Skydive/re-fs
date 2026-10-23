@@ -1,3 +1,4 @@
+mod auth;
 mod cache;
 mod client;
 mod fs;
@@ -51,10 +52,16 @@ struct Remote {
     /// re-fsd's TCP port (with --usb).
     #[arg(long, default_value_t = AGENT_PORT)]
     port: u16,
+    /// ed25519 private key for logging in over Wi-Fi [default: ~/.ssh/id_ed25519].
+    #[arg(long)]
+    identity: Option<PathBuf>,
 }
 
 impl Remote {
     fn targets(&self) -> Vec<Target> {
+        if let Some(id) = &self.identity {
+            auth::set_identity(id.clone());
+        }
         let mut t = Vec::new();
         if self.usb {
             t.push(Target::Usb { port: self.port });

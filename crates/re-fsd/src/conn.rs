@@ -48,6 +48,12 @@ pub struct Conn {
     out: VecDeque<Out>,
     /// The request id of this connection's Watch, if it sent one.
     pub watch_id: Option<u32>,
+    /// Trusted by address (stdio, USB, loopback) or logged in with an ssh key.
+    pub authed: bool,
+    /// The login challenge sent to an untrusted connection.
+    pub challenge: Option<[u8; 32]>,
+    /// Close once the queued replies are written (after a refused login).
+    pub closing: bool,
 }
 
 pub enum ReadState {
@@ -56,8 +62,8 @@ pub enum ReadState {
 }
 
 impl Conn {
-    pub fn new(io: Io) -> Self {
-        Conn { io, decoder: FrameDecoder::new(), out: VecDeque::new(), watch_id: None }
+    pub fn new(io: Io, authed: bool) -> Self {
+        Conn { io, decoder: FrameDecoder::new(), out: VecDeque::new(), watch_id: None, authed, challenge: None, closing: false }
     }
 
     /// Read everything available into the decoder (edge-triggered: until WouldBlock).
