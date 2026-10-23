@@ -142,9 +142,13 @@ nix build .#re-fs-rustls-agent     # client; `deploy` installs the static rustls
 nix build .#re-fsd-armv7           # agent with the tablet's OpenSSL (default): 788 KB, dynamic glibc
 nix build .#re-fsd-armv7-rustls    # agent with rustls + ring: 1.79 MB, static musl
 nix build .#re-fs-windows          # re-fs.exe for Windows (x86_64): ls, push, pair, deploy; no mount yet
-nix flake check                    # tests (both TLS backends), clippy, both agents
+nix flake check                    # tests (both TLS backends), clippy, both agents, Windows client
 nix develop                        # cargo, rust-analyzer
 ```
+
+`flake.nix` only wires things up; the builds are in `nix/`: `toolchain.nix`,
+`linux.nix` (client, checks, dev shell), `tablet.nix` (the two ARM agents) and
+`windows.nix`. See [Build and cross-compilation](docs/wiki/Build-and-Cross-Compilation.md).
 
 The agent's TLS backend is a cargo feature: `openssl` (default; links the tablet's
 `/usr/lib/libssl.so.3`, OpenSSL 3.5.6) or `rustls` (`--no-default-features
