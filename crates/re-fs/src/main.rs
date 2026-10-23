@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 #[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -152,14 +153,6 @@ enum Cmd {
         #[command(flatten)]
         remote: Remote,
     },
-    /// Wait until a reMarkable is plugged in by USB and its network is up (this
-    /// machine has its 10.11.99.x address); exit 1 on timeout. Used by the USB
-    /// auto-mount service before `mount --usb`.
-    WaitUsb {
-        /// Give up after this many seconds.
-        #[arg(long, default_value_t = 30)]
-        timeout: u64,
-    },
     /// Pin the tablet's TLS key (fetched over ssh), for --tls.
     Pair {
         /// ssh destination, e.g. root@10.11.99.1
@@ -224,16 +217,6 @@ fn main() -> Result<()> {
                 bail!("give --usb, --tls ADDR, --tcp ADDR and/or --ssh HOST");
             }
             runtime()?.block_on(push(remote.targets(), &files, &to))
-        }
-        Cmd::WaitUsb { timeout } => {
-            let until = std::time::Instant::now() + Duration::from_secs(timeout);
-            while !transport::usb_present() {
-                if std::time::Instant::now() >= until {
-                    bail!("no reMarkable USB network after {timeout} s");
-                }
-                std::thread::sleep(Duration::from_millis(250));
-            }
-            Ok(())
         }
         Cmd::Pair { host, agent } => pair(&host, &agent),
         Cmd::Deploy { host, binary, service } => {

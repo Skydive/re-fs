@@ -41,16 +41,15 @@ in
       Service = {
         # fusermount3 is a setuid wrapper on NixOS; ssh for any --ssh in extraArgs.
         Environment = [ "PATH=/run/wrappers/bin:${pkgs.openssh}/bin" ];
-        ExecStartPre = [
-          "${pkgs.coreutils}/bin/mkdir -p ${lib.escapeShellArg cfg.mountPoint}"
-          # The interface appears before the tablet's DHCP has given us an address.
-          "${re-fs} wait-usb --timeout 30"
-        ];
+        ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p ${lib.escapeShellArg cfg.mountPoint}";
         ExecStart = "${re-fs} mount ${lib.escapeShellArgs ([ cfg.mountPoint "--usb" ] ++ cfg.extraArgs)}";
         # If re-fs was killed rather than stopped, don't leave a dead mount behind.
         ExecStopPost = "-/run/wrappers/bin/fusermount3 -uz ${lib.escapeShellArg cfg.mountPoint}";
+        # The interface appears a moment before the tablet's DHCP gives us an
+        # address: re-fs reconnects by itself, and a first start that finds nothing
+        # (no saved index yet) is simply retried.
         Restart = "on-failure";
-        RestartSec = 3;
+        RestartSec = 2;
       };
       Install.WantedBy = [ device ];
     };

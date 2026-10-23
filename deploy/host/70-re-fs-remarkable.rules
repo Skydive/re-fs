@@ -1,0 +1,7 @@
+# re-fs USB auto-mount: name the reMarkable's USB network interface (its
+# RNDIS/Ethernet gadget, USB id 04b3:4010) sys-subsystem-net-devices-remarkable.device,
+# so the user service re-fs-usb.service starts when it appears and stops when it goes.
+# Installed to /etc/udev/rules.d by install-usb-automount.sh. If your tablet reports a
+# different id (`udevadm info /sys/class/net/<iface> | grep -E 'ID_(VENDOR|MODEL)_ID'`),
+# change it here.
+SUBSYSTEM=="net", ATTRS{idVendor}=="04b3", ATTRS{idProduct}=="4010", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/sys/subsystem/net/devices/remarkable"

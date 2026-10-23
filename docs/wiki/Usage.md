@@ -155,10 +155,30 @@ How it works:
    systemd name `sys-subsystem-net-devices-remarkable.device`.
 2. The user service `re-fs-usb.service` is `WantedBy` and `BindsTo` that device, so
    systemd starts it on plug-in and stops it on unplug.
-3. It runs `re-fs wait-usb` first (the interface appears a moment before the tablet's
-   DHCP gives your machine its 10.11.99.x address), then `re-fs mount ~/rm --usb`.
-   Unplugging stops the service; re-fs unmounts on SIGTERM, and a leftover mount is
-   cleared with `fusermount3 -uz` if it was killed instead.
+3. It runs `re-fs mount ~/rm --usb`. The interface appears a moment before the
+   tablet's DHCP gives your machine its 10.11.99.x address; re-fs just reconnects
+   (or systemd restarts it) until the link is up. Unplugging stops the service; re-fs
+   unmounts on SIGTERM, and a leftover mount is cleared with `fusermount3 -uz` if it
+   was killed instead.
+
+### Without Nix
+
+Any systemd distribution works with the files in `deploy/host/`:
+
+```sh
+deploy/host/install-usb-automount.sh                            # mounts at ~/rm
+deploy/host/install-usb-automount.sh --mountpoint ~/tablet -- --rw -v
+deploy/host/install-usb-automount.sh --uninstall
+```
+
+It needs `re-fs` and `fusermount3` on your PATH. It installs
+`/etc/udev/rules.d/70-re-fs-remarkable.rules` (the same rule as the NixOS module; it
+asks for sudo for this step only), reloads udev so an already-plugged-in tablet is
+picked up, writes `~/.config/systemd/user/re-fs-usb.service` with the paths it found,
+and enables it. Everything after `--` is passed to `re-fs mount`. If your tablet
+reports a different USB id, edit the rule file before installing.
+
+### Checking
 
 Check it with `systemctl --user status re-fs-usb` and
 `journalctl --user -u re-fs-usb`. It needs the tablet service (`re-fs deploy

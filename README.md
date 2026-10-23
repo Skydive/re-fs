@@ -45,7 +45,9 @@ services.re-fs.usbDevice.enable = true;   # NixOS
 services.re-fs.usbMount.enable = true;    # home-manager (mountPoint, extraArgs)
 ```
 
-See [Usage: Auto-mount on USB](docs/wiki/Usage.md#auto-mount-on-usb).
+Without Nix, `deploy/host/install-usb-automount.sh [--mountpoint DIR] [-- MOUNT-ARGS…]`
+installs the same udev rule (with sudo) and user service. See
+[Usage: Auto-mount on USB](docs/wiki/Usage.md#auto-mount-on-usb).
 
 ## What's in the mount
 
