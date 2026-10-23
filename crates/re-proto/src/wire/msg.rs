@@ -35,6 +35,12 @@ pub enum Request {
         len: u32,
         expect_mtime_ms: Option<i64>,
     },
+    /// Several page-folder files of one document in one round trip (`names` must
+    /// pass `is_page_file`). Answered by `Pages`; files that don't exist are left out.
+    ReadPages {
+        uuid: Uuid,
+        names: Vec<String>,
+    },
     /// Subscribe to `Event`s on this request id.
     Watch,
     /// Part of a file being uploaded, kept in the agent's staging area under `token`
@@ -105,6 +111,11 @@ pub enum Response {
         message: String,
     },
     Ok,
+    /// Answer to `ReadPages`: lz4-compressed postcard `Vec<PageData>`; see
+    /// [`compress_pages`].
+    Pages {
+        pages: Vec<u8>,
+    },
     /// The plan is on disk; the index is at `generation` and includes it.
     Applied {
         generation: u64,
@@ -125,6 +136,24 @@ pub enum ErrorCode {
     Unauthorized,
 }
 
+/// One file from a `ReadPages` answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageData {
+    pub name: String,
+    pub mtime_ms: i64,
+    pub data: Vec<u8>,
+}
+
+pub fn compress_pages(pages: &[PageData]) -> Vec<u8> {
+    let raw = postcard::to_stdvec(pages).expect("serialising pages");
+    lz4_flex::compress_prepend_size(&raw)
+}
+
+pub fn decompress_pages(blob: &[u8]) -> Result<Vec<PageData>, ProtoError> {
+    let raw = lz4_flex::decompress_size_prepended(blob)?;
+    Ok(postcard::from_bytes(&raw)?)
+}
+
 pub fn compress_entries(entries: &[&Entry]) -> Vec<u8> {
     // postcard into a Vec cannot fail for these types.
     let raw = postcard::to_stdvec(entries).expect("serialising entries");
@@ -140,6 +169,17 @@ pub fn decompress_entries(blob: &[u8]) -> Result<Vec<Entry>, ProtoError> {
 mod tests {
     use super::*;
     use crate::index::FileStat;
+
+    #[test]
+    fn pages_roundtrip() {
+        let p = vec![
+            PageData { name: "a.rm".into(), mtime_ms: 1, data: [1, 2, 3].repeat(100) },
+            PageData { name: "b-metadata.json".into(), mtime_ms: 2, data: vec![] },
+        ];
+        let blob = compress_pages(&p);
+        assert!(blob.len() < 300);
+        assert_eq!(decompress_pages(&blob).unwrap(), p);
+    }
 
     #[test]
     fn entries_roundtrip_and_compress() {

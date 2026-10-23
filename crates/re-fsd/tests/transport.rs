@@ -21,6 +21,8 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use uuid::Uuid;
 
 const DOC: Uuid = Uuid::from_bytes([0xab; 16]);
+const PAGE: &str = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
+const PAGE_DATA: &[u8] = b"reMarkable .lines file, version=6          (strokes)";
 
 struct Agent {
     port: u16,
@@ -54,6 +56,8 @@ fn start(name: &str, client_pk: &[u8]) -> Agent {
     std::fs::write(x.join(format!("{DOC}.pdf")), &pdf).unwrap();
     std::fs::write(x.join(format!("{DOC}.metadata")), br#"{"type":"DocumentType","visibleName":"Doc","parent":""}"#).unwrap();
     std::fs::write(x.join(format!("{DOC}.content")), br#"{"fileType":"pdf"}"#).unwrap();
+    std::fs::create_dir_all(x.join(DOC.to_string())).unwrap();
+    std::fs::write(x.join(format!("{DOC}/{PAGE}.rm")), PAGE_DATA).unwrap();
     std::fs::write(dir.join("authorized_keys"), authorized_line(client_pk) + "\n").unwrap();
 
     let key = re_fsd::tls::load_or_create_key(&dir.join("tls.key")).unwrap();
@@ -126,6 +130,12 @@ impl<S: Read + Write> Client<S> {
         let entries = decompress_entries(&entries).unwrap();
         assert_eq!(entries.len(), 1);
         let size = entries[0].stat(FileKind::Pdf).unwrap().size;
+        // Page files in one batch: the existing one comes back, the missing one is left out.
+        let names = vec![format!("{PAGE}.rm"), "11111111-1111-4111-8111-111111111111.rm".to_string()];
+        let Response::Pages { pages } = self.call(&Request::ReadPages { uuid: DOC, names })?.decode().unwrap() else { panic!("no pages") };
+        let pages = re_proto::wire::decompress_pages(&pages).unwrap();
+        assert_eq!(pages.len(), 1);
+        assert_eq!((pages[0].name.as_str(), pages[0].data.as_slice()), (format!("{PAGE}.rm").as_str(), PAGE_DATA));
         let mut pdf = Vec::new();
         while (pdf.len() as u64) < size {
             let f = self.call(&Request::Read { uuid: DOC, file: FileKind::Pdf, offset: pdf.len() as u64, len: 100_000, expect_mtime_ms: None })?;

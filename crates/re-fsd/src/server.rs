@@ -377,6 +377,11 @@ fn handle(conn: &mut Conn, store: &mut Store, frame: Frame, effects: &mut Effect
             Err(e) if e.kind() == io::ErrorKind::InvalidInput => conn.send(id, &err(ErrorCode::BadRequest, e.to_string())),
             Err(e) => conn.send(id, &err(ErrorCode::Io, e.to_string())),
         },
+        Request::ReadPages { uuid, names } => match store.read_pages(&uuid, &names) {
+            Ok(pages) => conn.send(id, &Response::Pages { pages: re_proto::wire::compress_pages(&pages) }),
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput => conn.send(id, &err(ErrorCode::BadRequest, e.to_string())),
+            Err(e) => conn.send(id, &err(ErrorCode::Io, e.to_string())),
+        },
         Request::Watch => {
             conn.watch_id = Some(id);
             conn.send(id, &Response::Event { generation: store.generation() });

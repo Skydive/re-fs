@@ -161,6 +161,30 @@ impl Store {
         self.items.keys().copied().collect()
     }
 
+    /// Several page-folder files at once (ReadPages). Missing files are left out;
+    /// a bad name, or more than half a frame's worth of data, is an error.
+    pub fn read_pages(&self, uuid: &Uuid, names: &[String]) -> io::Result<Vec<re_proto::wire::PageData>> {
+        let limit = (re_proto::wire::MAX_FRAME / 2) as u64;
+        let mut total = 0u64;
+        let mut out = Vec::with_capacity(names.len());
+        for name in names {
+            match self.open_page(uuid, name) {
+                Ok((mut f, size, mtime_ms)) => {
+                    total += size;
+                    if total > limit {
+                        return Err(io::Error::new(io::ErrorKind::InvalidInput, "too much for one ReadPages; ask in batches"));
+                    }
+                    let mut data = Vec::with_capacity(size as usize);
+                    io::Read::read_to_end(&mut f, &mut data)?;
+                    out.push(re_proto::wire::PageData { name: name.clone(), mtime_ms, data });
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
     /// Open a page-folder file for a ReadPage.
     pub fn open_page(&self, uuid: &Uuid, name: &str) -> io::Result<(File, u64, i64)> {
         if !is_page_file(name) {
@@ -337,6 +361,23 @@ mod tests {
         assert!(full);
         assert_eq!(e.len(), 1);
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn read_pages_batches_and_validates() {
+        let d = tmpdir("pages").join("xochitl");
+        let u = Uuid::from_bytes([4; 16]);
+        let pid = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
+        fs::create_dir_all(d.join(u.to_string())).unwrap();
+        fs::write(d.join(format!("{u}.metadata")), b"{}").unwrap();
+        fs::write(d.join(format!("{u}/{pid}.rm")), b"strokes").unwrap();
+        fs::write(d.join(format!("{u}/{pid}-metadata.json")), b"{}").unwrap();
+        let s = Store::open(&d).unwrap();
+        let missing = "11111111-1111-4111-8111-111111111111.rm".to_string();
+        let got = s.read_pages(&u, &[format!("{pid}.rm"), missing, format!("{pid}-metadata.json")]).unwrap();
+        assert_eq!(got.iter().map(|p| (p.name.as_str(), p.data.as_slice())).collect::<Vec<_>>(), [(format!("{pid}.rm").as_str(), &b"strokes"[..]), (format!("{pid}-metadata.json").as_str(), &b"{}"[..])]);
+        assert!(s.read_pages(&u, &["../../etc/passwd".into()]).is_err());
+        fs::remove_dir_all(d.parent().unwrap()).unwrap();
     }
 
     #[test]

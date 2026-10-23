@@ -165,11 +165,11 @@ impl Client {
         }
     }
 
-    /// Bytes of a page-folder file.
-    pub async fn read_page(&self, uuid: Uuid, name: &str, offset: u64, len: u32) -> Result<Vec<u8>, CallError> {
-        match self.call(&Request::ReadPage { uuid, name: name.to_owned(), offset, len, expect_mtime_ms: None }).await? {
-            Reply::Data(d) => Ok(d),
-            Reply::Msg(_) => Err(CallError::Unexpected),
+    /// Several page-folder files in one round trip; missing ones are left out.
+    pub async fn read_pages(&self, uuid: Uuid, names: Vec<String>) -> Result<Vec<re_proto::wire::PageData>, CallError> {
+        match self.call_msg(&Request::ReadPages { uuid, names }).await? {
+            Response::Pages { pages } => re_proto::wire::decompress_pages(&pages).map_err(|_| CallError::Unexpected),
+            _ => Err(CallError::Unexpected),
         }
     }
 

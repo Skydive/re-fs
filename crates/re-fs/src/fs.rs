@@ -174,6 +174,15 @@ impl Filesystem for ReFs {
         let tree = self.shared.tree.load();
         let Some(name) = name.to_str() else { return reply.error(ENOENT) };
         if let Some(n) = tree.lookup(parent, name) {
+            if let Some(node) = self.unmade(n) {
+                let attr_of = self.attr_fn();
+                let shared = self.shared.clone();
+                self.rt.spawn(async move {
+                    let made = make_for_stat(&shared, &node).await;
+                    reply.entry(&if made { TTL } else { Duration::ZERO }, &attr_of(&node), 0);
+                });
+                return;
+            }
             return reply.entry(&TTL, &self.attr(n), 0);
         }
         let uploads = self.uploads.lock().unwrap();
@@ -185,6 +194,15 @@ impl Filesystem for ReFs {
 
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
         if let Some(n) = self.shared.tree.load().node(ino) {
+            if let Some(node) = self.unmade(n) {
+                let attr_of = self.attr_fn();
+                let shared = self.shared.clone();
+                self.rt.spawn(async move {
+                    let made = make_for_stat(&shared, &node).await;
+                    reply.attr(&if made { TTL } else { Duration::ZERO }, &attr_of(&node));
+                });
+                return;
+            }
             return reply.attr(&TTL, &self.attr(n));
         }
         match self.uploads.lock().unwrap().get(&ino) {
@@ -264,8 +282,10 @@ impl Filesystem for ReFs {
             return reply.error(EISDIR);
         }
         if let Some(gk) = GenKey::of(n) {
+            // Made already (normally by the stat before this open): a plain file of
+            // known size, page-cached and mmap-able like any other.
             if self.shared.cache.generated(&gk).is_some() {
-                return reply.opened(0, fuser::consts::FOPEN_DIRECT_IO);
+                return reply.opened(0, fuser::consts::FOPEN_KEEP_CACHE);
             }
             if !self.shared.online.load(Ordering::Relaxed) {
                 return reply.error(EHOSTDOWN);
@@ -519,7 +539,52 @@ impl Filesystem for ReFs {
     }
 }
 
+/// How long a stat waits for a generated file to be made before answering with
+/// size 0 (rendering a big annotated PDF can take a while; the stat is retried).
+const MAKE_ON_STAT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Make a generated file so a stat can report its real size. False if it couldn't
+/// be made in time (offline, an error, or slow), in which case the caller reports
+/// size 0 without letting the kernel cache it. A slow one keeps being made in the
+/// background, and the kernel is told to drop the 0 once it's done.
+async fn make_for_stat(shared: &Arc<Shared>, node: &Node) -> bool {
+    let mut job = {
+        let (shared, node) = (shared.clone(), node.clone());
+        tokio::spawn(async move { generate::ensure(&shared, &node).await })
+    };
+    match tokio::time::timeout(MAKE_ON_STAT_TIMEOUT, &mut job).await {
+        Ok(Ok(Ok(_))) => true,
+        Ok(Ok(Err(e))) => {
+            shared.log(format_args!("making {:?}: {e}", node.name));
+            false
+        }
+        Ok(Err(e)) => {
+            shared.log(format_args!("making {:?}: {e}", node.name));
+            false
+        }
+        Err(_) => {
+            shared.log(format_args!("{:?} is taking a while; still making it", node.name));
+            let (shared, ino) = (shared.clone(), node.ino);
+            tokio::spawn(async move {
+                if matches!(job.await, Ok(Ok(_))) {
+                    shared.invalidate_inode(ino).await;
+                }
+            });
+            false
+        }
+    }
+}
+
 impl ReFs {
+    /// A generated file (rendered notebook, annotated PDF, …) that hasn't been made
+    /// yet, while we're online: its size is unknown until it is. File managers and
+    /// browsers treat a 0-byte file as empty, so stats make it first.
+    fn unmade(&self, n: &Node) -> Option<Node> {
+        let key = GenKey::of(n)?;
+        let online = self.shared.online.load(Ordering::Relaxed);
+        (online && self.shared.cache.generated_size(&key).is_none()).then(|| n.clone())
+    }
+
     fn attr_fn(&self) -> impl Fn(&Node) -> FileAttr + Send + 'static {
         let me = ReFs { shared: self.shared.clone(), rt: self.rt.clone(), uid: self.uid, gid: self.gid, uploads: Arc::default(), next_upload: 0 };
         move |n| me.attr(n)
