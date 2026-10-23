@@ -181,3 +181,7 @@ tools/check-mirror.sh                     # compare with an independent Python m
 
 A native agent serves a copy of it for full mount tests:
 `re-fsd --dir <copy> --listen 127.0.0.1:7746`, then `re-fs mount ~/rm --tcp 127.0.0.1:7746`.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
