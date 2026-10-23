@@ -16,3 +16,6 @@ fuser = { version = "0.15", default-features = false, features = ["abi-7-31"] }
 thiserror.workspace = true
 libc = "0.2"
 arc-swap = "1"
+postcard.workspace = true
+# The saved index on disk (the wire uses lz4, which suits the tablet better).
+zstd = "0.13"

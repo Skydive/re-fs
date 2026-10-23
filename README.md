@@ -4,7 +4,7 @@ A FUSE filesystem that shows a reMarkable 2's documents as their real folder tre
 
 ```
 re-fs deploy root@tablet.vpn                      # once: copy re-fsd to the tablet
-re-fs mount ~/rm --ssh root@tablet.vpn -v         # read-only folder tree
+re-fs mount ~/rm --ssh root@tablet.vpn -v         # folder tree; PDFs and EPUBs readable
 re-fs ls --ssh root@tablet.vpn -l Books           # same tree, no mount
 ```
 
@@ -25,9 +25,21 @@ Format notes: [docs/format.md](docs/format.md). Protocol: [docs/protocol.md](doc
 | M0 workspace, flake, armv7 cross-build | done |
 | M1 index, tree and naming; `re-fs ls` on a mirror | done |
 | M2 re-fsd agent + read-only FUSE folder tree | done |
-| M3 PDF/EPUB reads, cache, offline | next |
-| M4 writes (mkdir, copy in, move, trash) | |
+| M3 PDF/EPUB reads, cache, offline | done |
+| M4 writes (mkdir, copy in, move, trash) | next |
 | M5 USB / LAN / WireGuard transports | |
+
+## Reading files
+
+The first open of a PDF or EPUB starts a background download of the whole file into
+`~/.cache/re-fs/objects/` (`--cache-dir`, capped by `--cache-mib`, default 5 GiB, least
+recently used first). Reads wait only for their own range; a read far past the
+download front is fetched on its own. Later opens read the local copy, and the kernel
+keeps its page cache until the file changes on the tablet.
+
+The last index is kept in `~/.cache/re-fs/index.zstd`. If the tablet can't be reached,
+`re-fs mount` mounts that index read-only: cached files open, others fail with
+"Host is down". It reconnects in the background (backoff up to 30 s).
 
 ## Building
 
@@ -65,3 +77,5 @@ tools/check-mirror.sh                                # compare with tools/paths.
 | full index transfer (1.3 MB lz4) | 2.1 s | ~0.3 s |
 | `find` over the mounted tree | 7 ms | 7 ms |
 | a change on the tablet shows in the mount | ~0.3 s (200 ms is debounce) | |
+| first read of a PDF/EPUB | | 12–13 MiB/s (ssh) |
+| re-read from cache (16 MB PDF) | 16 ms | 16 ms |

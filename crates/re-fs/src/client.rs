@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use re_proto::wire::{encode_msg, ErrorCode, FrameDecoder, FrameKind, Request, Response};
+use re_proto::index::FileKind;
 use re_proto::PROTO_VERSION;
+use uuid::Uuid;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -24,7 +26,6 @@ pub enum CallError {
 
 pub enum Reply {
     Msg(Response),
-    #[expect(dead_code, reason = "file reads arrive in M3")]
     Data(Vec<u8>),
 }
 
@@ -153,6 +154,14 @@ impl Client {
         match self.call(req).await? {
             Reply::Msg(r) => Ok(r),
             Reply::Data(_) => Err(CallError::Unexpected),
+        }
+    }
+
+    /// Bytes of a tablet file; shorter than `len` only at EOF.
+    pub async fn read(&self, uuid: Uuid, file: FileKind, offset: u64, len: u32, expect_mtime_ms: Option<i64>) -> Result<Vec<u8>, CallError> {
+        match self.call(&Request::Read { uuid, file, offset, len, expect_mtime_ms }).await? {
+            Reply::Data(d) => Ok(d),
+            Reply::Msg(_) => Err(CallError::Unexpected),
         }
     }
 

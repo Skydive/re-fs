@@ -15,6 +15,7 @@ use re_proto::wire::{decompress_entries, Request, Response};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::cache::Cache;
 use crate::client::Client;
 use crate::transport::{self, Target};
 
@@ -23,16 +24,18 @@ pub struct Shared {
     pub client: ArcSwapOption<Client>,
     pub online: AtomicBool,
     pub notifier: Mutex<Option<fuser::Notifier>>,
+    pub cache: Arc<Cache>,
     pub verbose: bool,
 }
 
 impl Shared {
-    pub fn new(opts: &TreeOptions, verbose: bool) -> Arc<Self> {
+    pub fn new(opts: &TreeOptions, cache: Arc<Cache>, verbose: bool) -> Arc<Self> {
         Arc::new(Shared {
             tree: ArcSwap::from_pointee(Tree::build(&[], 0, opts)),
             client: ArcSwapOption::empty(),
             online: AtomicBool::new(false),
             notifier: Mutex::new(None),
+            cache,
             verbose,
         })
     }
@@ -53,6 +56,10 @@ struct Index {
 pub async fn run(target: Target, shared: Arc<Shared>, opts: TreeOptions, ready: oneshot::Sender<Result<()>>) {
     let mut ready = Some(ready);
     let mut index = Index { entries: HashMap::new(), at: None };
+    // The last index we saw, so the mount works while the tablet is asleep.
+    if let Some(saved) = shared.cache.load_index() {
+        index.entries = saved.into_iter().map(|e| (e.uuid, e)).collect();
+    }
     let mut backoff = Duration::from_secs(1);
     loop {
         let started = Instant::now();
@@ -61,10 +68,16 @@ pub async fn run(target: Target, shared: Arc<Shared>, opts: TreeOptions, ready: 
         shared.client.store(None);
         if let Err(e) = &r {
             if let Some(tx) = ready.take() {
-                let _ = tx.send(Err(anyhow::anyhow!("{target}: {e:#}")));
-                return;
+                if index.entries.is_empty() {
+                    let _ = tx.send(Err(anyhow::anyhow!("{target}: {e:#}")));
+                    return;
+                }
+                eprintln!("re-fs: {target}: {e:#}; mounting the saved index offline (cached files only)");
+                publish(&shared, &opts, &index, 0);
+                let _ = tx.send(Ok(()));
+            } else {
+                eprintln!("re-fs: {target}: {e:#}");
             }
-            eprintln!("re-fs: {target}: {e:#}");
         }
         // A link that stayed up a while resets the backoff.
         if started.elapsed() > Duration::from_secs(60) {
@@ -129,14 +142,10 @@ async fn sync(client: &Client, shared: &Shared, opts: &TreeOptions, index: &mut 
         index.entries.insert(e.uuid, e);
     }
     index.at = Some((instance, generation));
-
-    let list: Vec<Entry> = index.entries.values().cloned().collect();
-    let tree = Tree::build(&list, generation, opts);
-    for w in tree.warnings() {
-        shared.log(format_args!("warning: {w}"));
+    if changed > 0 {
+        shared.cache.save_index(&index.entries.values().collect::<Vec<_>>());
     }
-    let old = shared.tree.swap(Arc::new(tree));
-    let inval = old.diff(&shared.tree.load());
+    let inval = publish(shared, opts, index, generation);
     shared.log(format_args!(
         "generation {generation}: {} index, {changed} changed, {n} bytes, {} invalidations, {:?}",
         if full { "full" } else { "delta" },
@@ -145,6 +154,17 @@ async fn sync(client: &Client, shared: &Shared, opts: &TreeOptions, index: &mut 
     ));
     invalidate(shared, inval).await;
     Ok(())
+}
+
+/// Build the tree from `index`, swap it in, and return what the kernel must forget.
+fn publish(shared: &Shared, opts: &TreeOptions, index: &Index, generation: u64) -> Vec<Invalidation> {
+    let list: Vec<Entry> = index.entries.values().cloned().collect();
+    let tree = Tree::build(&list, generation, opts);
+    for w in tree.warnings() {
+        shared.log(format_args!("warning: {w}"));
+    }
+    let old = shared.tree.swap(Arc::new(tree));
+    old.diff(&shared.tree.load())
 }
 
 async fn invalidate(shared: &Shared, inval: Vec<Invalidation>) {

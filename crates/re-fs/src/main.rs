@@ -1,3 +1,4 @@
+mod cache;
 mod client;
 mod fs;
 mod local;
@@ -61,6 +62,12 @@ enum Cmd {
         /// Include notebooks (not readable yet).
         #[arg(long)]
         notebooks: bool,
+        /// Where downloaded files and the last index are kept [default: ~/.cache/re-fs].
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+        /// Largest the cache may grow, in MiB.
+        #[arg(long, default_value_t = 5120)]
+        cache_mib: u64,
         /// Log connections, index updates and warnings to stderr.
         #[arg(short, long)]
         verbose: bool,
@@ -103,9 +110,11 @@ enum Cmd {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Mount { mountpoint, remote, notebooks, verbose } => {
+        Cmd::Mount { mountpoint, remote, notebooks, cache_dir, cache_mib, verbose } => {
             let target = remote.target().context("give --ssh HOST or --tcp ADDR")?;
-            runtime()?.block_on(mount(target, &mountpoint, TreeOptions { notebooks }, verbose))
+            let dir = cache_dir.unwrap_or_else(cache::Cache::default_dir);
+            let cache = cache::Cache::open(dir.clone(), cache_mib << 20).with_context(|| format!("cache {}", dir.display()))?;
+            runtime()?.block_on(mount(target, &mountpoint, TreeOptions { notebooks }, cache, verbose))
         }
         Cmd::Ls { mirror, remote, path, recursive, long, paths, notebooks, warnings } => {
             let opts = TreeOptions { notebooks };
@@ -144,8 +153,8 @@ async fn fetch_tree(target: Target, opts: &TreeOptions) -> Result<Tree> {
     Ok(Tree::build(&decompress_entries(&entries)?, generation, opts))
 }
 
-async fn mount(target: Target, mountpoint: &Path, opts: TreeOptions, verbose: bool) -> Result<()> {
-    let shared = session::Shared::new(&opts, verbose);
+async fn mount(target: Target, mountpoint: &Path, opts: TreeOptions, cache: Arc<cache::Cache>, verbose: bool) -> Result<()> {
+    let shared = session::Shared::new(&opts, cache, verbose);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(session::run(target.clone(), shared.clone(), opts, ready_tx));
     match tokio::time::timeout(Duration::from_secs(60), ready_rx).await {
@@ -155,7 +164,7 @@ async fn mount(target: Target, mountpoint: &Path, opts: TreeOptions, verbose: bo
         Err(_) => bail!("{target}: no index after 60 s"),
     }
     let tree = shared.tree.load();
-    let fs = fs::ReFs::new(Arc::clone(&shared));
+    let fs = fs::ReFs::new(Arc::clone(&shared), tokio::runtime::Handle::current());
     let session = fuser::Session::new(fs, mountpoint, &fs::mount_options())
         .with_context(|| format!("mounting on {}", mountpoint.display()))?;
     *shared.notifier.lock().unwrap() = Some(session.notifier());

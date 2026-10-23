@@ -2,13 +2,15 @@
 //! browsing never waits on the network.
 
 use std::ffi::OsStr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use fuser::{FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyOpen, ReplyStatfs, Request};
-use libc::{EACCES, EISDIR, ENOENT, ENOSYS, ENOTDIR, EROFS};
+use libc::{EACCES, EHOSTDOWN, EISDIR, ENOENT, ENOTDIR, EROFS};
 use re_proto::index::tree::Node;
 
+use crate::cache::Key;
 use crate::session::Shared;
 
 /// How long the kernel may cache attributes and names. Changes from the tablet are
@@ -18,15 +20,16 @@ const TTL: Duration = Duration::from_secs(60);
 
 pub struct ReFs {
     shared: Arc<Shared>,
+    rt: tokio::runtime::Handle,
     uid: u32,
     gid: u32,
 }
 
 impl ReFs {
-    pub fn new(shared: Arc<Shared>) -> Self {
+    pub fn new(shared: Arc<Shared>, rt: tokio::runtime::Handle) -> Self {
         // SAFETY: getuid/getgid have no preconditions.
         let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-        ReFs { shared, uid, gid }
+        ReFs { shared, rt, uid, gid }
     }
 
     fn attr(&self, n: &Node) -> FileAttr {
@@ -95,17 +98,49 @@ impl Filesystem for ReFs {
         if flags & libc::O_ACCMODE != libc::O_RDONLY {
             return reply.error(EROFS);
         }
-        match self.shared.tree.load().node(ino) {
-            Some(n) if n.kind.is_dir() => reply.error(EISDIR),
-            Some(n) if n.kind.data_file().is_none() => reply.error(EACCES),
-            Some(_) => reply.opened(0, 0),
-            None => reply.error(ENOENT),
+        let tree = self.shared.tree.load();
+        let Some(n) = tree.node(ino) else { return reply.error(ENOENT) };
+        if n.kind.is_dir() {
+            return reply.error(EISDIR);
         }
+        let Some(key) = Key::of(n) else { return reply.error(EACCES) };
+        // Fail here rather than in read: read errors pass through the page cache,
+        // which turns every one of them into EIO.
+        if !self.shared.online.load(Ordering::Relaxed) && self.shared.cache.complete(&key).is_none() {
+            return reply.error(EHOSTDOWN);
+        }
+        // Start the download now, so the first read finds data on its way.
+        let _guard = self.rt.enter();
+        self.shared.cache.prefetch(&self.shared, &key);
+        // Keep the kernel's page cache across opens; a change on the tablet
+        // invalidates the inode (and so its pages).
+        reply.opened(0, fuser::consts::FOPEN_KEEP_CACHE);
     }
 
-    fn read(&mut self, _req: &Request<'_>, _ino: u64, _fh: u64, _offset: i64, _size: u32, _flags: i32, _lock: Option<u64>, reply: ReplyData) {
-        // M3: cache + fetch from the tablet.
-        reply.error(ENOSYS);
+    fn read(&mut self, _req: &Request<'_>, ino: u64, _fh: u64, offset: i64, size: u32, _flags: i32, _lock: Option<u64>, reply: ReplyData) {
+        let tree = self.shared.tree.load();
+        let Some(key) = tree.node(ino).and_then(Key::of) else { return reply.error(ENOENT) };
+        let offset = offset.max(0) as u64;
+        // Cached: answer on this thread.
+        if let Some(f) = self.shared.cache.complete(&key) {
+            let end = (offset + u64::from(size)).min(key.size);
+            let mut buf = vec![0u8; end.saturating_sub(offset) as usize];
+            return match std::os::unix::fs::FileExt::read_exact_at(&f, &mut buf, offset) {
+                Ok(()) => reply.data(&buf),
+                Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+            };
+        }
+        // Not yet: wait for the download (or the tablet) without blocking FUSE.
+        let shared = self.shared.clone();
+        self.rt.spawn(async move {
+            match shared.cache.read(&shared, &key, offset, size).await {
+                Ok(buf) => reply.data(&buf),
+                Err(e) => {
+                    shared.log(format_args!("read {}{}: {e}", key.uuid, key.kind.suffix()));
+                    reply.error(e.errno());
+                }
+            }
+        });
     }
 
     fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
