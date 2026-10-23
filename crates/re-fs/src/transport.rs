@@ -69,18 +69,6 @@ impl Target {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn usb_network() {
-        use std::net::Ipv4Addr;
-        assert!(super::is_usb_net(Ipv4Addr::new(10, 11, 99, 2)));
-        assert!(super::is_usb_net(Ipv4Addr::new(10, 11, 99, 7)), "seen on a real link (/27)");
-        assert!(!super::is_usb_net(Ipv4Addr::new(10, 11, 99, 1)), "that's the tablet itself");
-        assert!(!super::is_usb_net(Ipv4Addr::new(192, 168, 71, 15)));
-    }
-}
-
 impl std::fmt::Display for Target {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -127,5 +115,17 @@ pub async fn connect(target: &Target) -> io::Result<Link> {
             let (r, w) = s.into_split();
             Ok(Link { reader: Box::new(r), writer: Box::new(w), child: None })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn usb_network() {
+        use std::net::Ipv4Addr;
+        assert!(super::is_usb_net(Ipv4Addr::new(10, 11, 99, 2)));
+        assert!(super::is_usb_net(Ipv4Addr::new(10, 11, 99, 7)), "seen on a real link (/27)");
+        assert!(!super::is_usb_net(Ipv4Addr::new(10, 11, 99, 1)), "that's the tablet itself");
+        assert!(!super::is_usb_net(Ipv4Addr::new(192, 168, 71, 15)));
     }
 }
