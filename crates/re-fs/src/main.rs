@@ -17,7 +17,6 @@ use std::path::PathBuf;
 use std::process::Stdio;
 #[cfg(unix)]
 use std::sync::Arc;
-#[cfg(unix)]
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
