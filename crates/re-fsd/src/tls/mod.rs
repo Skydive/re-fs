@@ -2,9 +2,9 @@
 //! /home/root/re-fs, pinned by the client; the client's in authorized_keys).
 //!
 //! Two interchangeable backends, chosen at build time:
-//! - `rustls` (default): rustls + ring, statically linked.
-//! - `openssl`: the system's OpenSSL 3 (the reMarkable ships libssl.so.3), for a
-//!   smaller agent.
+//! - `openssl` (default): the system's OpenSSL 3 (the reMarkable ships
+//!   libssl.so.3), for a small agent.
+//! - `rustls`: rustls + ring, statically linked, no system libraries needed.
 //!
 //! Both expose the same API: `load_or_create_key`, `public_hex`, `server_config`,
 //! and a `Session` used by the connection code in a buffer-oriented way (bytes

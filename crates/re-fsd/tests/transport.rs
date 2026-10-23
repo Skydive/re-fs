@@ -2,8 +2,8 @@
 //! plain TCP and TLS, with whichever TLS backend this build has. The client side
 //! is always rustls, like re-fs, so the openssl build also checks interop.
 //!
-//!   cargo test -p re-fsd                                          # rustls backend
-//!   cargo test -p re-fsd --no-default-features --features openssl # openssl backend
+//!   cargo test -p re-fsd                                         # openssl backend
+//!   cargo test -p re-fsd --no-default-features --features rustls # rustls backend
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};

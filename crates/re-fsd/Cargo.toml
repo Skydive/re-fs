@@ -18,11 +18,12 @@ rcgen = { workspace = true, optional = true }
 openssl = { version = "0.10", optional = true }
 
 [features]
-default = ["rustls"]
-# TLS backend for Wi-Fi clients (pick one): rustls + ring, statically linked…
-rustls = ["dep:rustls", "dep:rcgen"]
-# …or the system OpenSSL 3 (the tablet's /usr/lib/libssl.so.3), for a smaller binary.
+default = ["openssl"]
+# TLS backend for Wi-Fi clients (pick one): the system OpenSSL 3 (the tablet's
+# /usr/lib/libssl.so.3), for a small agent…
 openssl = ["dep:openssl"]
+# …or rustls + ring, statically linked (no system libraries needed).
+rustls = ["dep:rustls", "dep:rcgen"]
 
 [dev-dependencies]
 # The tests' TLS client is always rustls (it's what re-fs uses), so they also

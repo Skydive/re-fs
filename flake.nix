@@ -39,6 +39,10 @@
       common = {
         inherit src;
         strictDeps = true;
+        # re-fsd's default TLS backend is the system OpenSSL.
+        nativeBuildInputs = [ pkgs.pkg-config ];
+        buildInputs = [ pkgs.openssl ];
+        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
       };
       cargoArtifacts = craneLib.buildDepsOnly common;
 
@@ -49,17 +53,17 @@
         doCheck = false; # tests run once, in checks.tests
       } // extra);
 
-      # The tablet agent: static musl, linked by rust-lld (.cargo/config.toml).
-      # ring's C and assembly are compiled by nixpkgs' (cached) ARMv7 GCC against
-      # musl's headers; the result still links as a static musl binary.
+      # The tablet agent with the rustls backend (optional): static musl, linked by
+      # rust-lld (.cargo/config.toml). ring's C and assembly are compiled by nixpkgs'
+      # (cached) ARMv7 GCC against musl's headers; the result is fully static.
       armPkgs = pkgs.pkgsCross.armv7l-hf-multiplatform;
       armCC = armPkgs.stdenv.cc;
       armPrefix = armCC.targetPrefix;
       armCommon = {
         inherit src;
         strictDeps = true;
-        pname = "re-fsd";
-        cargoExtraArgs = "-p re-fsd";
+        pname = "re-fsd-rustls";
+        cargoExtraArgs = "-p re-fsd --no-default-features --features rustls";
         CARGO_BUILD_TARGET = armTarget;
         doCheck = false;
         nativeBuildInputs = [ armCC ];
@@ -69,19 +73,19 @@
           export CFLAGS_armv7_unknown_linux_musleabihf="-nostdinc -isystem ${armPkgs.musl.dev}/include -isystem $(${armPrefix}cc -print-file-name=include)"
         '';
       };
-      re-fsd-armv7 = craneLib.buildPackage (armCommon // {
+      re-fsd-armv7-rustls = craneLib.buildPackage (armCommon // {
         cargoArtifacts = craneLib.buildDepsOnly armCommon;
       });
 
-      # The agent with the OpenSSL backend (`tls = "openssl"`): a dynamic glibc
+      # The tablet agent with the OpenSSL backend (the default): a dynamic glibc
       # binary using the reMarkable's /usr/lib/libssl.so.3 (OpenSSL 3.5) instead of
       # carrying rustls + ring. Built against nixpkgs' (cached) ARMv7 OpenSSL 3.5 and
       # glibc, then pointed at the tablet's loader with no rpath.
       armGnuCommon = {
         inherit src;
         strictDeps = true;
-        pname = "re-fsd-openssl";
-        cargoExtraArgs = "-p re-fsd --no-default-features --features openssl";
+        pname = "re-fsd";
+        cargoExtraArgs = "-p re-fsd";
         CARGO_BUILD_TARGET = armGnuTarget;
         doCheck = false;
         nativeBuildInputs = [ armCC pkgs.pkg-config pkgs.patchelf ];
@@ -91,15 +95,15 @@
         "ARMV7_UNKNOWN_LINUX_GNUEABIHF_OPENSSL_LIB_DIR" = "${armPkgs.openssl.out}/lib";
         "ARMV7_UNKNOWN_LINUX_GNUEABIHF_OPENSSL_INCLUDE_DIR" = "${armPkgs.openssl.dev}/include";
       };
-      re-fsd-armv7-openssl = craneLib.buildPackage (armGnuCommon // {
+      re-fsd-armv7 = craneLib.buildPackage (armGnuCommon // {
         cargoArtifacts = craneLib.buildDepsOnly armGnuCommon;
         dontPatchELF = true;
         postFixup = ''
           patchelf --set-interpreter /lib/ld-linux-armhf.so.3 --remove-rpath $out/bin/re-fsd
         '';
       });
-      # A re-fsd for the tablet by TLS backend: "rustls" (static) or "openssl".
-      agentFor = tls: { rustls = re-fsd-armv7; openssl = re-fsd-armv7-openssl; }.${tls};
+      # A re-fsd for the tablet by TLS backend: "openssl" (default) or "rustls" (static).
+      agentFor = tls: { openssl = re-fsd-armv7; rustls = re-fsd-armv7-rustls; }.${tls};
     in
     {
       # For other flakes: the tablet agent by TLS backend, e.g.
@@ -108,10 +112,10 @@
 
       packages.${system} = {
         # `re-fs deploy` installs the armv7 agent it was built with.
-        re-fs = member "re-fs" { RE_FSD_ARMV7 = "${agentFor "rustls"}/bin/re-fsd"; };
-        # The same client, deploying the OpenSSL agent.
-        re-fs-openssl-agent = member "re-fs" { RE_FSD_ARMV7 = "${agentFor "openssl"}/bin/re-fsd"; };
-        inherit re-fsd-armv7-openssl;
+        re-fs = member "re-fs" { RE_FSD_ARMV7 = "${agentFor "openssl"}/bin/re-fsd"; };
+        # The same client, deploying the static rustls agent.
+        re-fs-rustls-agent = member "re-fs" { RE_FSD_ARMV7 = "${agentFor "rustls"}/bin/re-fsd"; };
+        inherit re-fsd-armv7-rustls;
         re-fsd = member "re-fsd" { };
         inherit re-fsd-armv7;
         default = self.packages.${system}.re-fs;
@@ -119,25 +123,22 @@
 
       checks.${system} = {
         tests = craneLib.cargoTest (common // { inherit cargoArtifacts; });
-        # The agent's transmission tests again, with the OpenSSL backend.
-        tests-openssl = craneLib.cargoTest (common // {
+        # The agent's transmission tests again, with the rustls backend.
+        tests-rustls = craneLib.cargoTest (common // {
           inherit cargoArtifacts;
-          cargoTestExtraArgs = "-p re-fsd --no-default-features --features openssl";
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.openssl ];
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
+          cargoTestExtraArgs = "-p re-fsd --no-default-features --features rustls";
         });
         clippy = craneLib.cargoClippy (common // {
           inherit cargoArtifacts;
           cargoClippyExtraArgs = "--all-targets -- -D warnings";
         });
-        inherit re-fsd-armv7 re-fsd-armv7-openssl;
+        inherit re-fsd-armv7 re-fsd-armv7-rustls;
       };
 
       devShells.${system}.default = craneLib.devShell {
         inputsFrom = [ self.packages.${system}.re-fs ];
         packages = [ pkgs.rust-analyzer pkgs.python3 pkgs.pkg-config pkgs.openssl ];
-        # For `cargo test -p re-fsd --no-default-features --features openssl`.
+        # re-fsd's tests link the system OpenSSL (its default backend).
         LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
       };
     };
