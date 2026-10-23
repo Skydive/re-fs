@@ -20,6 +20,7 @@ flowchart LR
 
 | Page | What it covers |
 |---|---|
+| [Usage](Usage) | Setup, transports (incl. what `--ssh` does), mounting, troubleshooting |
 | [reMarkable storage format](Remarkable-Storage-Format) | How the tablet stores folders, documents, pages and strokes |
 | [Architecture](Architecture) | The four crates, threads, data flow |
 | [Wire protocol](Wire-Protocol) | Frames, messages, index deltas, change events |

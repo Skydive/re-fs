@@ -1,6 +1,7 @@
 **re-fs**
 
 - [Home](Home)
+- [Usage](Usage)
 - [reMarkable storage format](Remarkable-Storage-Format)
 - [Architecture](Architecture)
 - [Wire protocol](Wire-Protocol)

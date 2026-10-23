@@ -61,12 +61,16 @@ last write, so the tablet shows the changes.
 
 ## Transports and security
 
-| | Encryption | Who may connect |
-|---|---|---|
-| USB (`--usb`, plain TCP) | none (a cable) | anyone on the cable |
-| WireGuard (`--tcp 10.0.0.5:7745`, plain TCP via wireproxy) | WireGuard | VPN peers |
-| Wi-Fi (`--tls ADDR`) | TLS 1.3 | ed25519 keys in the tablet's `authorized_keys` |
-| ssh (`--ssh HOST`) | ssh | whoever ssh lets in |
+Every transport talks to **re-fsd**, the agent on the tablet; they differ only in the
+pipe. Give several and re-fs tries them in the order `--usb` (only while the cable is
+in), each `--tls`, each `--tcp`, then `--ssh`, staying on the one it got until it drops.
+
+| Flag | Pipe | Encryption | Who may connect |
+|---|---|---|---|
+| `--usb` | TCP to `10.11.99.1:7745` | none (a cable) | anyone on the cable |
+| `--tls ADDR` | TCP + TLS 1.3 (Wi-Fi) | TLS 1.3 | ed25519 keys in the tablet's `authorized_keys` |
+| `--tcp ADDR` | plain TCP (e.g. `10.0.0.5:7745` over WireGuard) | none (WireGuard's) | trusted addresses only (USB, loopback/wireproxy) |
+| `--ssh HOST` | `ssh HOST re-fsd --stdio` | SSH | whoever SSH lets in |
 
 Over TLS both identities are ed25519 keys: re-fs presents a certificate for
 `~/.ssh/id_ed25519` (or `--identity`), which the tablet checks against
@@ -74,6 +78,39 @@ Over TLS both identities are ed25519 keys: re-fs presents a certificate for
 `~/.config/re-fs/tablet.pub`. Plain TCP is refused from Wi-Fi. On the tablet, systemd
 starts the agent on the first connection and it exits after 5 idle minutes. After a
 reMarkable OS update, run `sh /home/root/re-fs/install.sh`.
+
+### What `--ssh` does
+
+re-fsd is still required with `--ssh`; only the way the client reaches it changes.
+With `--ssh root@10.11.99.1`, re-fs runs
+
+```sh
+ssh root@10.11.99.1 /home/root/re-fs/re-fsd --stdio
+```
+
+That starts a fresh re-fsd on the tablet for this mount, speaking the normal re-fs
+protocol over the SSH channel's stdin and stdout. The index, file reads, change events
+and `--rw` writes all go through the same messages as over TCP. When you unmount, SSH
+closes and that re-fsd exits. It's separate from the socket-activated service on port
+7745, and both can run at once.
+
+Unlike sshfs, which talks to the tablet's generic SFTP server and makes a round trip
+for every stat, readdir and read, re-fs over SSH still uses its own agent: the whole
+index in one go, browsing from memory, pushed change events, cached reads and the
+reMarkable-aware folder tree. SSH is just the encrypted, authenticated pipe.
+
+| | `--ssh` | `--usb` / `--tcp` / `--tls` |
+|---|---|---|
+| On the tablet | the re-fsd binary at `/home/root/re-fs/re-fsd` (`re-fs deploy` puts it there); no service needed | the socket-activated `re-fsd.service` on port 7745 |
+| Encryption | SSH (Dropbear) | none over USB/WireGuard; TLS 1.3 for `--tls` |
+| Login | your SSH key, checked by Dropbear | trusted address, or a TLS client certificate from your SSH key |
+| Connect cost | an SSH handshake each mount: about 0.3–0.4 s on USB/LAN, about 3.5 s over WireGuard | about 0.25 s on USB |
+| Reads (measured) | about 18 MiB/s over USB, 13 MiB/s on Wi-Fi | 23 MiB/s plain TCP over USB, 18–23 MiB/s with TLS over USB |
+
+So `--ssh` is the zero-setup fallback: it works anywhere SSH works, even without the
+service installed. TCP and TLS are faster to connect and slightly faster to transfer.
+The full usage guide (setup, every option, troubleshooting) is
+[docs/wiki/Usage.md](docs/wiki/Usage.md).
 
 ## Building
 
@@ -119,6 +156,7 @@ returns in 40–100 ms over the LAN. More in [Measurements](docs/wiki/Measuremen
 
 ## Documentation
 
+- [Usage guide](docs/wiki/Usage.md): setup, transports (what `--ssh` does), every option, troubleshooting
 - [reMarkable storage format](docs/wiki/Remarkable-Storage-Format.md): how the tablet stores everything
 - [Architecture](docs/wiki/Architecture.md) · [Wire protocol](docs/wiki/Wire-Protocol.md) · [Transports and security](docs/wiki/Transports-and-Security.md)
 - [Rendering](docs/wiki/Rendering.md) · [Writes and plans](docs/wiki/Writes-and-Plans.md) · [Caching and offline](docs/wiki/Caching-and-Offline.md)
