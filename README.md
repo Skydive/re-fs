@@ -116,11 +116,16 @@ The full usage guide (setup, every option, troubleshooting) is
 
 ## Building
 
+The client also builds for Windows (`re-fs-windows`, cross-compiled with MinGW, one
+self-contained `.exe`). Everything except `mount` works there; mounting needs a WinFsp
+backend, which isn't written yet.
+
 ```sh
 nix build .#re-fs                  # client; `deploy` installs the OpenSSL agent
 nix build .#re-fs-rustls-agent     # client; `deploy` installs the static rustls agent
 nix build .#re-fsd-armv7           # agent with the tablet's OpenSSL (default): 788 KB, dynamic glibc
 nix build .#re-fsd-armv7-rustls    # agent with rustls + ring: 1.79 MB, static musl
+nix build .#re-fs-windows          # re-fs.exe for Windows (x86_64): ls, push, pair, deploy; no mount yet
 nix flake check                    # tests (both TLS backends), clippy, both agents
 nix develop                        # cargo, rust-analyzer
 ```

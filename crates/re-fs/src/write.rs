@@ -2,7 +2,6 @@
 //! by the agent, and completes once the client's tree includes it.
 
 use std::fs::File;
-use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -89,19 +88,19 @@ pub async fn mkdir(shared: Arc<Shared>, parent: u64, name: String) -> Result<(),
 /// Upload a finished local file as a new document.
 pub async fn import(shared: Arc<Shared>, parent: ParentRef, name: String, kind: DocKind, file: Arc<File>, size: u64) -> Result<(), Errno> {
     let mut head = [0u8; 64];
-    let n = file.read_at(&mut head, 0).map_err(|_| EIO)?;
+    let n = crate::pio::read_at(&file, &mut head, 0).map_err(|_| EIO)?;
     if !kind.sniff(&head[..n]) {
         shared.log(format_args!("{name:?} isn't a valid {} file", kind.ext()));
         return Err(EINVAL);
     }
     let c = client(&shared)?;
     let uuid = Uuid::new_v4();
-    let token = rand_u64();
+    let token = crate::rand_u64();
     let mut off = 0u64;
     while off < size {
         let len = (size - off).min(CHUNK as u64) as usize;
         let mut buf = vec![0u8; len];
-        file.read_exact_at(&mut buf, off).map_err(|_| EIO)?;
+        crate::pio::read_exact_at(&file, &mut buf, off).map_err(|_| EIO)?;
         c.put_chunk(token, off, buf).await.map_err(errno)?;
         off += len as u64;
     }
@@ -177,7 +176,3 @@ pub async fn trash(shared: Arc<Shared>, node: Node) -> Result<(), Errno> {
     run(&shared, Plan { expect: vec![expect], ops, restart: true }).await
 }
 
-pub fn rand_u64() -> u64 {
-    let u = Uuid::new_v4().as_u128();
-    (u as u64) ^ ((u >> 64) as u64)
-}

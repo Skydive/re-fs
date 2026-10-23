@@ -20,16 +20,25 @@ pub fn set_identity(path: PathBuf) {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    home.map(PathBuf::from).unwrap_or_default()
 }
 
 fn identity_path() -> PathBuf {
     IDENTITY.get().cloned().unwrap_or_else(|| home().join(".ssh/id_ed25519"))
 }
 
-/// Where the tablet's pinned TLS key (hex) is kept.
+/// Where the tablet's pinned TLS key (hex) is kept: ~/.config/re-fs/tablet.pub
+/// (XDG_CONFIG_HOME), or %APPDATA%\\re-fs\\tablet.pub on Windows.
 pub fn pin_path() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("re-fs/tablet.pub")
+    #[cfg(windows)]
+    let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| home().join("AppData").join("Roaming"));
+    #[cfg(not(windows))]
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
+    base.join("re-fs").join("tablet.pub")
 }
 
 pub fn save_pin(hex: &str) -> Result<()> {

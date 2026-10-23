@@ -13,7 +13,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -87,6 +86,7 @@ pub enum ReadError {
     Call(#[from] CallError),
 }
 
+#[cfg(unix)]
 impl ReadError {
     pub fn errno(&self) -> i32 {
         match self {
@@ -118,12 +118,15 @@ impl Cache {
         Ok((path, f))
     }
 
+    /// ~/.cache/re-fs (XDG_CACHE_HOME), or %LOCALAPPDATA%\\re-fs on Windows.
     pub fn default_dir() -> PathBuf {
-        std::env::var_os("XDG_CACHE_HOME")
+        #[cfg(windows)]
+        let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        #[cfg(not(windows))]
+        let base = std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".cache")))
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("re-fs")
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+        base.unwrap_or_else(std::env::temp_dir).join("re-fs")
     }
 
     pub fn dir(&self) -> &Path {
@@ -266,7 +269,7 @@ impl Cache {
 
 fn read_at(f: &File, offset: u64, end: u64) -> io::Result<Vec<u8>> {
     let mut buf = vec![0u8; (end - offset) as usize];
-    f.read_exact_at(&mut buf, offset)?;
+    crate::pio::read_exact_at(f, &mut buf, offset)?;
     Ok(buf)
 }
 
@@ -304,7 +307,7 @@ async fn download(client: &Client, key: &Key, file: &File, tx: &watch::Sender<St
         if chunk.len() != len as usize {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "file is shorter than the index says"));
         }
-        file.write_all_at(&chunk, off)?;
+        crate::pio::write_all_at(file, &chunk, off)?;
         have = off + chunk.len() as u64;
         tx.send_replace(State::Have(have));
         issue(&mut queue, &mut next);

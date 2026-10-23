@@ -17,6 +17,7 @@
       armTarget = "armv7-unknown-linux-musleabihf";
       # The OpenSSL agent links the tablet's own glibc and libssl.so.3 dynamically.
       armGnuTarget = "armv7-unknown-linux-gnueabihf";
+      winTarget = "x86_64-pc-windows-gnu";
 
       f = fenix.packages.${system};
       toolchain = f.combine [
@@ -27,6 +28,7 @@
         f.stable.rust-src
         f.targets.${armTarget}.stable.rust-std
         f.targets.${armGnuTarget}.stable.rust-std
+        f.targets.${winTarget}.stable.rust-std
       ];
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
 
@@ -102,6 +104,28 @@
           patchelf --set-interpreter /lib/ld-linux-armhf.so.3 --remove-rpath $out/bin/re-fsd
         '';
       });
+      # The client for Windows (x86_64, MinGW): ls, push, pair and deploy; no mount
+      # yet (that needs a WinFsp backend). Linked by nixpkgs' (cached) MinGW GCC,
+      # which also compiles ring's and zstd's C.
+      winPkgs = pkgs.pkgsCross.mingwW64;
+      winCC = winPkgs.stdenv.cc;
+      winCommon = {
+        inherit src;
+        strictDeps = true;
+        pname = "re-fs-windows";
+        cargoExtraArgs = "-p re-fs";
+        CARGO_BUILD_TARGET = winTarget;
+        doCheck = false;
+        nativeBuildInputs = [ winCC ];
+        "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER" = "${winCC.targetPrefix}cc";
+        "CC_x86_64_pc_windows_gnu" = "${winCC.targetPrefix}cc";
+        "AR_x86_64_pc_windows_gnu" = "${winCC.targetPrefix}ar";
+        "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS" = "-L native=${winPkgs.windows.pthreads}/lib";
+      };
+      re-fs-windows = craneLib.buildPackage (winCommon // {
+        cargoArtifacts = craneLib.buildDepsOnly winCommon;
+      });
+
       # A re-fsd for the tablet by TLS backend: "openssl" (default) or "rustls" (static).
       agentFor = tls: { openssl = re-fsd-armv7; rustls = re-fsd-armv7-rustls; }.${tls};
     in
@@ -117,7 +141,7 @@
         re-fs-rustls-agent = member "re-fs" { RE_FSD_ARMV7 = "${agentFor "rustls"}/bin/re-fsd"; };
         inherit re-fsd-armv7-rustls;
         re-fsd = member "re-fsd" { };
-        inherit re-fsd-armv7;
+        inherit re-fsd-armv7 re-fs-windows;
         default = self.packages.${system}.re-fs;
       };
 
@@ -132,7 +156,7 @@
           inherit cargoArtifacts;
           cargoClippyExtraArgs = "--all-targets -- -D warnings";
         });
-        inherit re-fsd-armv7 re-fsd-armv7-rustls;
+        inherit re-fsd-armv7 re-fsd-armv7-rustls re-fs-windows;
       };
 
       devShells.${system}.default = craneLib.devShell {

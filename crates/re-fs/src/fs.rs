@@ -543,6 +543,20 @@ impl ReFs {
     }
 }
 
+/// The kernel side of `session::Invalidate`: FUSE notifications.
+pub struct FuseNotifier(pub fuser::Notifier);
+
+impl crate::session::Invalidate for FuseNotifier {
+    // ENOENT just means the kernel had nothing cached.
+    fn inode(&self, ino: u64) {
+        let _ = self.0.inval_inode(ino, 0, 0);
+    }
+
+    fn entry(&self, parent: u64, name: &str) {
+        let _ = self.0.inval_entry(parent, OsStr::new(name));
+    }
+}
+
 /// Mount options shared by every mount.
 pub fn mount_options(writable: bool) -> Vec<fuser::MountOption> {
     use fuser::MountOption::*;

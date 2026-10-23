@@ -109,7 +109,22 @@ fn is_usb_net(ip: std::net::Ipv4Addr) -> bool {
     o[0..3] == USB_TABLET[0..3] && o[3] != USB_TABLET[3]
 }
 
+/// (interface, IPv4 address) for every interface: Windows can't tell which are USB
+/// devices from here, so the 10.11.99.x address alone identifies the tablet's link.
+#[cfg(windows)]
+fn usb_interfaces() -> Vec<(String, std::net::Ipv4Addr)> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|i| match i.ip() {
+            std::net::IpAddr::V4(ip) => Some((i.name, ip)),
+            std::net::IpAddr::V6(_) => None,
+        })
+        .collect()
+}
+
 /// (interface, IPv4 address) for interfaces backed by a USB device.
+#[cfg(unix)]
 fn usb_interfaces() -> Vec<(String, std::net::Ipv4Addr)> {
     let mut out = Vec::new();
     let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();

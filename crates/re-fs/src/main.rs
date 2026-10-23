@@ -1,16 +1,23 @@
 mod auth;
 mod cache;
 mod client;
+#[cfg(unix)]
 mod fs;
 mod generate;
 mod local;
 mod session;
+mod pio;
 mod transport;
+#[cfg(unix)]
 mod write;
 
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -177,7 +184,13 @@ fn main() -> Result<()> {
             }
             let dir = cache_dir.unwrap_or_else(cache::Cache::default_dir);
             let cache = cache::Cache::open(dir.clone(), cache_mib << 20).with_context(|| format!("cache {}", dir.display()))?;
-            runtime()?.block_on(mount(targets, &mountpoint, TreeOptions { notebooks: !hide_notebooks, views: !no_views }, cache, rw, verbose))
+            #[cfg(unix)]
+            return runtime()?.block_on(mount(targets, &mountpoint, TreeOptions { notebooks: !hide_notebooks, views: !no_views }, cache, rw, verbose));
+            #[cfg(not(unix))]
+            {
+                let _ = (mountpoint, hide_notebooks, no_views, cache, rw, verbose);
+                bail!("mounting isn't supported on this platform yet (Windows needs the WinFsp backend); ls, push, pair and deploy work")
+            }
         }
         Cmd::Ls { mirror, remote, path, recursive, long, paths, hide_notebooks, no_views, warnings } => {
             let opts = TreeOptions { notebooks: !hide_notebooks, views: !no_views };
@@ -214,6 +227,12 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// A random u64 (from a v4 UUID's randomness), e.g. for upload tokens.
+pub fn rand_u64() -> u64 {
+    let u = uuid::Uuid::new_v4().as_u128();
+    (u as u64) ^ ((u >> 64) as u64)
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
@@ -261,7 +280,7 @@ async fn push(targets: Vec<Target>, files: &[PathBuf], to: &str) -> Result<()> {
             bail!("{name} isn't a valid {} file", kind.ext());
         }
         let uuid = uuid::Uuid::new_v4();
-        let token = write::rand_u64();
+        let token = rand_u64();
         for (n, chunk) in data.chunks(4 << 20).enumerate() {
             c.put_chunk(token, (n * (4 << 20)) as u64, chunk.to_vec()).await?;
         }
@@ -298,6 +317,7 @@ async fn fetch_tree(targets: Vec<Target>, opts: &TreeOptions) -> Result<Tree> {
     Ok(Tree::build(&decompress_entries(&entries)?, generation, opts))
 }
 
+#[cfg(unix)]
 async fn mount(targets: Vec<Target>, mountpoint: &Path, opts: TreeOptions, cache: Arc<cache::Cache>, rw: bool, verbose: bool) -> Result<()> {
     let shared = session::Shared::new(&opts, cache, rw, verbose);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -313,7 +333,7 @@ async fn mount(targets: Vec<Target>, mountpoint: &Path, opts: TreeOptions, cache
     let fs = fs::ReFs::new(Arc::clone(&shared), tokio::runtime::Handle::current());
     let session = fuser::Session::new(fs, mountpoint, &fs::mount_options(rw))
         .with_context(|| format!("mounting on {}", mountpoint.display()))?;
-    *shared.notifier.lock().unwrap() = Some(session.notifier());
+    *shared.notifier.lock().unwrap() = Some(Arc::new(fs::FuseNotifier(session.notifier())));
     let bg = session.spawn()?;
     eprintln!("re-fs: {} items mounted on {} via {via} (Ctrl-C to unmount)", tree.nodes().count(), mountpoint.display());
     drop(tree);

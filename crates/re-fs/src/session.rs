@@ -2,7 +2,6 @@
 //! events, and reconnect with backoff when the link drops (e.g. the tablet sleeps).
 
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -19,6 +18,13 @@ use crate::cache::Cache;
 use crate::client::Client;
 use crate::transport::{self, Target};
 
+/// What the mount backend (FUSE today) must drop from the OS's caches when the
+/// tree changes. Calls may block; they're made off the async workers.
+pub trait Invalidate: Send + Sync {
+    fn inode(&self, ino: u64);
+    fn entry(&self, parent: u64, name: &str);
+}
+
 pub struct Shared {
     pub tree: ArcSwap<Tree>,
     /// The raw entries the tree was built from (writes edit their JSON).
@@ -29,7 +35,8 @@ pub struct Shared {
     pub writable: bool,
     pub client: ArcSwapOption<Client>,
     pub online: AtomicBool,
-    pub notifier: Mutex<Option<fuser::Notifier>>,
+    /// Tells the OS filesystem layer what it may have cached that changed.
+    pub notifier: Mutex<Option<Arc<dyn Invalidate>>>,
     pub cache: Arc<Cache>,
     pub generator: crate::generate::Generator,
     pub verbose: bool,
@@ -55,7 +62,7 @@ impl Shared {
     pub async fn invalidate_inode(&self, ino: u64) {
         let notifier = self.notifier.lock().unwrap().clone();
         if let Some(n) = notifier {
-            let _ = tokio::task::spawn_blocking(move || n.inval_inode(ino, 0, 0)).await;
+            let _ = tokio::task::spawn_blocking(move || n.inode(ino)).await;
         }
     }
 
@@ -212,11 +219,10 @@ async fn invalidate(shared: &Shared, inval: Vec<Invalidation>) {
     // Writes to /dev/fuse; keep it off the async workers.
     let _ = tokio::task::spawn_blocking(move || {
         for i in inval {
-            // ENOENT just means the kernel had nothing cached.
-            let _ = match &i {
-                Invalidation::Inode(ino) => notifier.inval_inode(*ino, 0, 0),
-                Invalidation::Entry { parent, name } => notifier.inval_entry(*parent, OsStr::new(name)),
-            };
+            match &i {
+                Invalidation::Inode(ino) => notifier.inode(*ino),
+                Invalidation::Entry { parent, name } => notifier.entry(*parent, name),
+            }
         }
     })
     .await;
