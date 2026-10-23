@@ -33,6 +33,20 @@ Transports are tried in this order on each connect, and re-fs stays on the one i
 until it drops: `--usb` (only while the cable is in), each `--tls ADDR`, each
 `--tcp ADDR`, then `--ssh HOST`.
 
+### Auto-mount on USB
+
+The flake has a NixOS module (`nixosModules.default`, a udev rule naming the tablet's USB
+network device) and a home-manager module (`homeManagerModules.default`, a user service
+bound to that device), so the tablet mounts at `~/rm` when plugged in and unmounts when
+unplugged:
+
+```nix
+services.re-fs.usbDevice.enable = true;   # NixOS
+services.re-fs.usbMount.enable = true;    # home-manager (mountPoint, extraArgs)
+```
+
+See [Usage: Auto-mount on USB](docs/wiki/Usage.md#auto-mount-on-usb).
+
 ## What's in the mount
 
 ```
