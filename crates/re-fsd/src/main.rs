@@ -7,7 +7,7 @@ mod conn;
 mod server;
 mod store;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -18,15 +18,20 @@ const USAGE: &str = "usage: re-fsd [--dir DIR] [--stdio] [--listen ADDR]... [-v]
   --dir DIR       the xochitl directory (default: /home/root/.local/share/remarkable/xochitl)
   --stdio         serve one client on stdin/stdout, exit when it closes
   --listen ADDR   serve TCP on ADDR, e.g. 127.0.0.1:7745 (repeatable)
+  --allow-local IP
+                  accept TCP only when the client reached us on this local
+                  address (repeatable), e.g. 127.0.0.1 and 10.11.99.1 (USB)
+                  with --listen 0.0.0.0:7745, so the USB interface can come
+                  and go and Wi-Fi peers are refused
   -v, --verbose   log to stderr
   -V, --version";
 
 fn main() -> ExitCode {
     match parse() {
-        Ok(Some((dir, stdio, listen, verbose))) => {
+        Ok(Some((dir, stdio, listen, allow_local, verbose))) => {
             // Only the real xochitl directory belongs to a running xochitl.
             let restart_xochitl = dir == std::path::Path::new(DEFAULT_DIR);
-            match server::run(server::Options { dir: &dir, stdio, listen: &listen, verbose, restart_xochitl }) {
+            match server::run(server::Options { dir: &dir, stdio, listen: &listen, allow_local: &allow_local, verbose, restart_xochitl }) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("re-fsd: {e}");
@@ -42,17 +47,18 @@ fn main() -> ExitCode {
     }
 }
 
-type Args = (PathBuf, bool, Vec<SocketAddr>, bool);
+type Args = (PathBuf, bool, Vec<SocketAddr>, Vec<IpAddr>, bool);
 
 fn parse() -> Result<Option<Args>, lexopt::Error> {
     use lexopt::prelude::*;
-    let (mut dir, mut stdio, mut listen, mut verbose) = (PathBuf::from(DEFAULT_DIR), false, Vec::new(), false);
+    let (mut dir, mut stdio, mut listen, mut allow, mut verbose) = (PathBuf::from(DEFAULT_DIR), false, Vec::new(), Vec::new(), false);
     let mut p = lexopt::Parser::from_env();
     while let Some(arg) = p.next()? {
         match arg {
             Long("dir") => dir = p.value()?.into(),
             Long("stdio") => stdio = true,
             Long("listen") => listen.push(p.value()?.parse()?),
+            Long("allow-local") => allow.push(p.value()?.parse()?),
             Short('v') | Long("verbose") => verbose = true,
             Short('V') | Long("version") => {
                 println!("re-fsd {}", env!("CARGO_PKG_VERSION"));
@@ -68,5 +74,5 @@ fn parse() -> Result<Option<Args>, lexopt::Error> {
     if !stdio && listen.is_empty() {
         return Err("nothing to serve: give --stdio or --listen".into());
     }
-    Ok(Some((dir, stdio, listen, verbose)))
+    Ok(Some((dir, stdio, listen, allow, verbose)))
 }

@@ -22,6 +22,8 @@ use crate::transport::Target;
 /// Where `re-fs deploy` puts the agent, and where `--ssh` runs it from.
 const AGENT_DIR: &str = "/home/root/re-fs";
 const DEFAULT_AGENT: &str = "/home/root/re-fs/re-fsd";
+/// The tablet service's port.
+const AGENT_PORT: u16 = 7745;
 
 #[derive(Parser)]
 #[command(version, about = "FUSE view of a reMarkable tablet's documents")]
@@ -30,26 +32,38 @@ struct Cli {
     cmd: Cmd,
 }
 
+/// How to reach the tablet. Several may be given; they're tried in the order
+/// USB (while plugged in), each --tcp, then --ssh.
 #[derive(Args, Clone)]
 struct Remote {
-    /// Reach the tablet with `ssh HOST re-fsd --stdio`.
-    #[arg(long, value_name = "HOST", conflicts_with = "tcp")]
-    ssh: Option<String>,
-    /// Reach a listening re-fsd.
+    /// Use the tablet's USB network (10.11.99.1) whenever the cable is plugged in.
+    #[arg(long)]
+    usb: bool,
+    /// A listening re-fsd, e.g. 10.0.0.5:7745 over WireGuard (repeatable).
     #[arg(long, value_name = "ADDR")]
-    tcp: Option<SocketAddr>,
+    tcp: Vec<SocketAddr>,
+    /// Fall back to `ssh HOST re-fsd --stdio`.
+    #[arg(long, value_name = "HOST")]
+    ssh: Option<String>,
     /// re-fsd's path on the tablet (with --ssh).
     #[arg(long, default_value = DEFAULT_AGENT)]
     agent: String,
+    /// re-fsd's TCP port (with --usb).
+    #[arg(long, default_value_t = AGENT_PORT)]
+    port: u16,
 }
 
 impl Remote {
-    fn target(&self) -> Option<Target> {
-        match (&self.ssh, self.tcp) {
-            (Some(host), _) => Some(Target::Ssh { host: host.clone(), agent: self.agent.clone() }),
-            (None, Some(a)) => Some(Target::Tcp(a)),
-            (None, None) => None,
+    fn targets(&self) -> Vec<Target> {
+        let mut t = Vec::new();
+        if self.usb {
+            t.push(Target::Usb { port: self.port });
         }
+        t.extend(self.tcp.iter().map(|a| Target::Tcp(*a)));
+        if let Some(host) = &self.ssh {
+            t.push(Target::Ssh { host: host.clone(), agent: self.agent.clone() });
+        }
+        t
     }
 }
 
@@ -79,7 +93,7 @@ enum Cmd {
     /// List the folder tree as re-fs would show it.
     Ls {
         /// A local copy of the tablet's xochitl directory.
-        #[arg(long, conflicts_with_all = ["ssh", "tcp"])]
+        #[arg(long, conflicts_with_all = ["ssh", "tcp", "usb"])]
         mirror: Option<PathBuf>,
         #[command(flatten)]
         remote: Remote,
@@ -109,23 +123,30 @@ enum Cmd {
         /// The armv7 re-fsd binary (default: the one this re-fs was built with).
         #[arg(long)]
         binary: Option<PathBuf>,
+        /// Also install and start the re-fsd systemd service (TCP on USB and
+        /// loopback, port 7745). Without it, a running service is restarted.
+        #[arg(long)]
+        service: bool,
     },
 }
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Mount { mountpoint, remote, notebooks, rw, cache_dir, cache_mib, verbose } => {
-            let target = remote.target().context("give --ssh HOST or --tcp ADDR")?;
+            let targets = remote.targets();
+            if targets.is_empty() {
+                bail!("give --usb, --tcp ADDR and/or --ssh HOST");
+            }
             let dir = cache_dir.unwrap_or_else(cache::Cache::default_dir);
             let cache = cache::Cache::open(dir.clone(), cache_mib << 20).with_context(|| format!("cache {}", dir.display()))?;
-            runtime()?.block_on(mount(target, &mountpoint, TreeOptions { notebooks }, cache, rw, verbose))
+            runtime()?.block_on(mount(targets, &mountpoint, TreeOptions { notebooks }, cache, rw, verbose))
         }
         Cmd::Ls { mirror, remote, path, recursive, long, paths, notebooks, warnings } => {
             let opts = TreeOptions { notebooks };
-            let tree = match (mirror, remote.target()) {
-                (Some(m), _) => Tree::build(&local::scan(&m)?, 0, &opts),
-                (None, Some(t)) => runtime()?.block_on(fetch_tree(t, &opts))?,
-                (None, None) => bail!("give --mirror DIR, --ssh HOST or --tcp ADDR"),
+            let tree = match mirror {
+                Some(m) => Tree::build(&local::scan(&m)?, 0, &opts),
+                None if remote.targets().is_empty() => bail!("give --mirror DIR, --usb, --tcp ADDR or --ssh HOST"),
+                None => runtime()?.block_on(fetch_tree(remote.targets(), &opts))?,
             };
             if warnings {
                 for w in tree.warnings() {
@@ -140,7 +161,7 @@ fn main() -> Result<()> {
             list(&tree, start, recursive, long, paths, "");
             Ok(())
         }
-        Cmd::Deploy { host, binary } => deploy(&host, binary),
+        Cmd::Deploy { host, binary, service } => deploy(&host, binary, service),
     }
 }
 
@@ -148,8 +169,20 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?)
 }
 
-async fn fetch_tree(target: Target, opts: &TreeOptions) -> Result<Tree> {
-    let c = client::Client::start(transport::connect(&target).await?);
+async fn fetch_tree(targets: Vec<Target>, opts: &TreeOptions) -> Result<Tree> {
+    let mut link = None;
+    let mut errors = Vec::new();
+    for t in targets.iter().filter(|t| t.available()) {
+        match transport::connect(t).await {
+            Ok(l) => {
+                link = Some(l);
+                break;
+            }
+            Err(e) => errors.push(format!("{t}: {e}")),
+        }
+    }
+    let Some(link) = link else { bail!("can't reach the tablet: {}", errors.join("; ")) };
+    let c = client::Client::start(link);
     c.hello().await?;
     let Response::Index { generation, entries, .. } = c.call_msg(&Request::GetIndex { since: None }).await? else {
         bail!("expected an index");
@@ -157,15 +190,16 @@ async fn fetch_tree(target: Target, opts: &TreeOptions) -> Result<Tree> {
     Ok(Tree::build(&decompress_entries(&entries)?, generation, opts))
 }
 
-async fn mount(target: Target, mountpoint: &Path, opts: TreeOptions, cache: Arc<cache::Cache>, rw: bool, verbose: bool) -> Result<()> {
+async fn mount(targets: Vec<Target>, mountpoint: &Path, opts: TreeOptions, cache: Arc<cache::Cache>, rw: bool, verbose: bool) -> Result<()> {
     let shared = session::Shared::new(&opts, cache, rw, verbose);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(session::run(target.clone(), shared.clone(), opts, ready_tx));
+    let via = targets.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+    tokio::spawn(session::run(targets, shared.clone(), opts, ready_tx));
     match tokio::time::timeout(Duration::from_secs(60), ready_rx).await {
         Ok(Ok(Ok(()))) => {}
         Ok(Ok(Err(e))) => return Err(e),
         Ok(Err(_)) => bail!("session ended before connecting"),
-        Err(_) => bail!("{target}: no index after 60 s"),
+        Err(_) => bail!("{via}: no index after 60 s"),
     }
     let tree = shared.tree.load();
     let fs = fs::ReFs::new(Arc::clone(&shared), tokio::runtime::Handle::current());
@@ -173,7 +207,7 @@ async fn mount(target: Target, mountpoint: &Path, opts: TreeOptions, cache: Arc<
         .with_context(|| format!("mounting on {}", mountpoint.display()))?;
     *shared.notifier.lock().unwrap() = Some(session.notifier());
     let bg = session.spawn()?;
-    eprintln!("re-fs: {} items from {target} mounted on {} (Ctrl-C to unmount)", tree.nodes().count(), mountpoint.display());
+    eprintln!("re-fs: {} items mounted on {} via {via} (Ctrl-C to unmount)", tree.nodes().count(), mountpoint.display());
     drop(tree);
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -192,17 +226,32 @@ async fn mount(target: Target, mountpoint: &Path, opts: TreeOptions, cache: Arc<
     Ok(())
 }
 
-/// Copy re-fsd to AGENT_DIR on the tablet, replacing any running copy atomically.
-fn deploy(host: &str, binary: Option<PathBuf>) -> Result<()> {
+const SERVICE_UNIT: &str = include_str!("../../../deploy/re-fsd.service");
+const INSTALL_SH: &str = include_str!("../../../deploy/install.sh");
+
+/// Copy re-fsd to AGENT_DIR on the tablet, replacing any running copy atomically,
+/// and optionally install the service.
+fn deploy(host: &str, binary: Option<PathBuf>, service: bool) -> Result<()> {
     let binary = match binary.or_else(|| option_env!("RE_FSD_ARMV7").map(PathBuf::from)) {
         Some(b) => b,
         None => bail!("give --binary (e.g. $(nix build .#re-fsd-armv7 --print-out-paths)/bin/re-fsd)"),
     };
     let bytes = std::fs::read(&binary).with_context(|| format!("reading {}", binary.display()))?;
-    let script = format!(
+    let mut script = format!(
         "set -e; mkdir -p {AGENT_DIR}; cat > {AGENT_DIR}/re-fsd.new; chmod 755 {AGENT_DIR}/re-fsd.new; \
-         mv -f {AGENT_DIR}/re-fsd.new {DEFAULT_AGENT}; {DEFAULT_AGENT} --version"
+         mv -f {AGENT_DIR}/re-fsd.new {DEFAULT_AGENT}; {DEFAULT_AGENT} --version\n"
     );
+    if service {
+        // Heredocs with a quoted delimiter: the files are written verbatim.
+        script += &format!(
+            "cat > {AGENT_DIR}/re-fsd.service <<'RE_FS_EOF'\n{SERVICE_UNIT}RE_FS_EOF\n\
+             cat > {AGENT_DIR}/install.sh <<'RE_FS_EOF'\n{INSTALL_SH}RE_FS_EOF\n\
+             chmod 755 {AGENT_DIR}/install.sh\nsh {AGENT_DIR}/install.sh\n"
+        );
+    } else {
+        // Keep a running service on the new binary.
+        script += "if systemctl is-active -q re-fsd 2>/dev/null; then systemctl restart re-fsd; echo 're-fsd service restarted'; fi\n";
+    }
     let mut child = std::process::Command::new("ssh")
         .args(["-o", "BatchMode=yes", host, &script])
         .stdin(Stdio::piped())

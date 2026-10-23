@@ -130,9 +130,11 @@ pub async fn rename(shared: Arc<Shared>, node: Node, new_parent: u64, new_name: 
         }
         naming::visible_name(&new_name)
     } else {
-        // Keep the extension: it's the file type, not part of the name.
-        let ext = node.kind.ext();
-        let base = naming::strip_ext(&new_name, ext).ok_or(EINVAL)?;
+        // The type's extension is shown, not stored: "x.pdf" → "y.pdf" stores "y".
+        // Any other new name is stored as typed ("x.pdf" → "notes.epub" stores
+        // "notes.epub"); the file keeps its type, so it then shows as
+        // "notes.epub.pdf".
+        let base = naming::strip_ext(&new_name, node.kind.ext()).unwrap_or(&new_name);
         if base.is_empty() {
             return Err(EINVAL);
         }

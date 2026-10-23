@@ -27,7 +27,12 @@
       ];
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
 
-      src = craneLib.cleanCargoSource ./.;
+      # Cargo sources, plus deploy/ (the tablet service files are embedded in re-fs).
+      src = pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter = path: type:
+          craneLib.filterCargoSources path type || pkgs.lib.hasInfix "/deploy" path;
+      };
       common = {
         inherit src;
         strictDeps = true;

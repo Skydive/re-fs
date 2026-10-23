@@ -37,6 +37,8 @@ pub struct Options<'a> {
     pub dir: &'a Path,
     pub stdio: bool,
     pub listen: &'a [SocketAddr],
+    /// If non-empty, TCP clients must have reached one of these local addresses.
+    pub allow_local: &'a [std::net::IpAddr],
     pub verbose: bool,
     /// Run `systemctl restart xochitl` after plans that ask for it.
     pub restart_xochitl: bool,
@@ -138,6 +140,11 @@ pub fn run(opts: Options) -> io::Result<()> {
                     loop {
                         match l.accept() {
                             Ok((mut s, peer)) => {
+                                let local = s.local_addr().map(|a| a.ip()).ok();
+                                if !opts.allow_local.is_empty() && !local.is_some_and(|ip| opts.allow_local.contains(&ip)) {
+                                    log(opts.verbose, format_args!("refused {peer} (reached us on {local:?})"));
+                                    continue;
+                                }
                                 let _ = s.set_nodelay(true);
                                 let tok = next_conn;
                                 next_conn += 1;

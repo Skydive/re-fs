@@ -62,7 +62,9 @@ struct Index {
     at: Option<(u64, u64)>,
 }
 
-pub async fn run(target: Target, shared: Arc<Shared>, opts: TreeOptions, ready: oneshot::Sender<Result<()>>) {
+/// Keep a link to the tablet: on each (re)connect try `targets` in order (USB only
+/// while plugged in), then follow changes on that link until it ends.
+pub async fn run(targets: Vec<Target>, shared: Arc<Shared>, opts: TreeOptions, ready: oneshot::Sender<Result<()>>) {
     let mut ready = Some(ready);
     let mut index = Index { entries: HashMap::new(), at: None };
     // The last index we saw, so the mount works while the tablet is asleep.
@@ -71,26 +73,36 @@ pub async fn run(target: Target, shared: Arc<Shared>, opts: TreeOptions, ready: 
     }
     let mut backoff = Duration::from_secs(1);
     loop {
-        let started = Instant::now();
-        let r = connected(&target, &shared, &opts, &mut index, &mut ready).await;
-        shared.online.store(false, Ordering::Relaxed);
-        shared.client.store(None);
-        if let Err(e) = &r {
-            if let Some(tx) = ready.take() {
-                if index.entries.is_empty() {
-                    let _ = tx.send(Err(anyhow::anyhow!("{target}: {e:#}")));
-                    return;
+        let mut errors = Vec::new();
+        let mut was_up = false;
+        for target in targets.iter().filter(|t| t.available()) {
+            match connected(target, &shared, &opts, &mut index, &mut ready).await {
+                Ok(()) => {
+                    was_up = true;
+                    break;
                 }
-                eprintln!("re-fs: {target}: {e:#}; mounting the saved index offline (cached files only)");
-                publish(&shared, &opts, &index, 0);
-                let _ = tx.send(Ok(()));
-            } else {
-                eprintln!("re-fs: {target}: {e:#}");
+                Err(e) => {
+                    shared.log(format_args!("{target}: {e:#}"));
+                    errors.push(format!("{target}: {e:#}"));
+                }
             }
         }
-        // A link that stayed up a while resets the backoff.
-        if started.elapsed() > Duration::from_secs(60) {
+        shared.online.store(false, Ordering::Relaxed);
+        shared.client.store(None);
+        if was_up {
+            // The link ended after working: try again right away.
             backoff = Duration::from_secs(1);
+            continue;
+        }
+        let why = if errors.is_empty() { "no transport available".to_string() } else { errors.join("; ") };
+        if let Some(tx) = ready.take() {
+            if index.entries.is_empty() {
+                let _ = tx.send(Err(anyhow::anyhow!("{why}")));
+                return;
+            }
+            eprintln!("re-fs: {why}; mounting the saved index offline (cached files only)");
+            publish(&shared, &opts, &index, 0);
+            let _ = tx.send(Ok(()));
         }
         shared.log(format_args!("offline; reconnecting in {backoff:?}"));
         tokio::time::sleep(backoff).await;
@@ -107,7 +119,9 @@ async fn connected(
 ) -> Result<()> {
     let link = transport::connect(target).await?;
     let client = Client::start(link);
-    let (agent, instance, _gen) = client.hello().await?;
+    let (agent, instance, _gen) = tokio::time::timeout(Duration::from_secs(20), client.hello())
+        .await
+        .map_err(|_| anyhow::anyhow!("no answer from the agent"))??;
     shared.log(format_args!("connected to {agent} via {target}"));
     let mut events = client.watch()?;
     sync(&client, shared, opts, index).await?;

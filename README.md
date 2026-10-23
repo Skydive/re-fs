@@ -3,7 +3,9 @@
 A FUSE filesystem that shows a reMarkable 2's documents as their real folder tree.
 
 ```
-re-fs deploy root@tablet.vpn                      # once: copy re-fsd to the tablet
+re-fs deploy root@10.11.99.1 --service               # once: agent + tablet service (TCP 7745)
+re-fs mount ~/rm --usb --ssh root@tablet.vpn      # USB if plugged in, else ssh
+re-fs deploy root@tablet.vpn                      # just copy re-fsd (ssh-only use)
 re-fs mount ~/rm --ssh root@tablet.vpn -v         # folder tree; PDFs and EPUBs readable
 re-fs mount ~/rm --ssh root@tablet.vpn --rw       # also mkdir, cp in, mv, rm
 re-fs ls --ssh root@tablet.vpn -l Books           # same tree, no mount
@@ -28,7 +30,29 @@ Format notes: [docs/format.md](docs/format.md). Protocol: [docs/protocol.md](doc
 | M2 re-fsd agent + read-only FUSE folder tree | done |
 | M3 PDF/EPUB reads, cache, offline | done |
 | M4 writes (mkdir, copy in, move, trash) | done |
-| M5 USB / LAN / WireGuard transports, tablet service | next |
+| M5 TCP over USB, tablet service | done (WireGuard tunnel: one wireproxy entry, not yet added) |
+
+## Transports
+
+`--usb`, `--tcp ADDR` (repeatable) and `--ssh HOST` can be combined. Each time
+re-fs connects it tries them in that order, skipping `--usb` unless a reMarkable USB
+network interface is up (a USB NIC with a 10.11.99.x address). It stays on whichever
+link it got until that link drops.
+
+The tablet service (`deploy/re-fsd.service`, installed by `re-fs deploy --service`)
+listens on port 7745 and serves only clients that reach it on 10.11.99.1 (USB) or
+127.0.0.1 (where wireproxy's tunnels end). Wi-Fi peers are refused, since the
+protocol has no encryption of its own. After a reMarkable OS update, run
+`sh /home/root/re-fs/install.sh` (or add it to `/home/root/wireproxy/reinstall.sh`).
+
+For WireGuard, add to `/home/root/wireproxy/wireproxy.conf` and restart wireproxy:
+
+```
+# re-fs agent: re-fs mount ~/rm --tcp 10.0.0.5:7745
+[TCPServerTunnel]
+ListenPort = 7745
+Target = 127.0.0.1:7745
+```
 
 ## Reading files
 
@@ -55,7 +79,9 @@ The last index is kept in `~/.cache/re-fs/index.zstd`. If the tablet can't be re
   its name. Anything else fails with "Invalid argument".
 - Existing documents can't be overwritten or edited in place (that would misalign
   their annotations). Copy in a new one instead.
-- A document's extension is its type: `mv x.pdf x.epub` is refused.
+- A document's extension shows its type and isn't stored: `mv x.pdf y.pdf` names it
+  "y". Renaming to another extension keeps that text in the name (`mv x.pdf notes.epub`
+  shows as `notes.epub.pdf`), since the file is still a PDF.
 - `rmdir` refuses folders that still hold anything, including notebooks that
   aren't shown yet.
 - Items already in `.trash` can't be deleted for good from here.
@@ -101,5 +127,6 @@ tools/check-mirror.sh                                # compare with tools/paths.
 | full index transfer (1.3 MB lz4) | 2.1 s | ~0.3 s |
 | `find` over the mounted tree | 7 ms | 7 ms |
 | a change on the tablet shows in the mount | ~0.3 s (200 ms is debounce) | |
-| first read of a PDF/EPUB | | 12–13 MiB/s (ssh) |
+| first read of a PDF/EPUB | | 12–13 MiB/s (ssh); 23 MiB/s over USB (TCP) |
+| mount over USB (TCP) | | 0.24 s |
 | re-read from cache (16 MB PDF) | 16 ms | 16 ms |
