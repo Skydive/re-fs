@@ -28,6 +28,17 @@ use crate::write;
 /// pushed as invalidations, so this can be long; it only bounds staleness if a
 /// notification is ever missed.
 const TTL: Duration = Duration::from_secs(60);
+/// Files re-fs adds at the top of every mount so desktops show it as a reMarkable
+/// with its own icon: GVfs (Thunar, Nautilus) reads `.xdg-volume-info` from a mount's
+/// root for its name and icon. Fixed inodes in the reserved range below 16.
+const VOLUME_INFO: (u64, &str, &[u8]) = (9, ".xdg-volume-info", b"[Volume Info]\nName=reMarkable\nIconFile=.re-fs-icon.svg\n");
+const VOLUME_ICON: (u64, &str, &[u8]) = (10, ".re-fs-icon.svg", include_bytes!("../../../deploy/re-fs-icon.svg"));
+const ROOT_FILES: [(u64, &str, &[u8]); 2] = [VOLUME_INFO, VOLUME_ICON];
+
+fn root_file_by_ino(ino: u64) -> Option<&'static [u8]> {
+    ROOT_FILES.iter().find(|f| f.0 == ino).map(|f| f.2)
+}
+
 /// Inodes for files being copied in, until the tablet has them.
 const FIRST_UPLOAD_INO: u64 = 1 << 62;
 
@@ -171,6 +182,11 @@ impl Filesystem for ReFs {
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let tree = self.shared.tree.load();
         let Some(name) = name.to_str() else { return reply.error(ENOENT) };
+        if parent == re_proto::index::ino::ROOT {
+            if let Some(&(ino, _, data)) = ROOT_FILES.iter().find(|f| f.1 == name) {
+                return reply.entry(&TTL, &self.root_file_attr(ino, data), 0);
+            }
+        }
         if let Some(n) = tree.lookup(parent, name) {
             if let Some(node) = self.unmade(n) {
                 let attr_of = self.attr_fn();
@@ -191,6 +207,9 @@ impl Filesystem for ReFs {
     }
 
     fn getattr(&mut self, _req: &Request<'_>, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+        if let Some(data) = root_file_by_ino(ino) {
+            return reply.attr(&TTL, &self.root_file_attr(ino, data));
+        }
         if let Some(n) = self.shared.tree.load().node(ino) {
             if let Some(node) = self.unmade(n) {
                 let attr_of = self.attr_fn();
@@ -262,7 +281,8 @@ impl Filesystem for ReFs {
         let parent = tree.parent(dir).ino;
         let dots = [(dir.ino, FileType::Directory, "."), (parent, FileType::Directory, "..")];
         let kids = children.map(|n| (n.ino, if n.kind.is_dir() { FileType::Directory } else { FileType::RegularFile }, n.name.as_str()));
-        for (i, (ino, kind, name)) in dots.into_iter().chain(kids).enumerate().skip(offset as usize) {
+        let extra = (ino == re_proto::index::ino::ROOT).then_some(ROOT_FILES).into_iter().flatten().map(|(i, name, _)| (i, FileType::RegularFile, name));
+        for (i, (ino, kind, name)) in dots.into_iter().chain(kids).chain(extra).enumerate().skip(offset as usize) {
             if reply.add(ino, i as i64 + 1, kind, name) {
                 break;
             }
@@ -273,6 +293,9 @@ impl Filesystem for ReFs {
     fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         if flags & libc::O_ACCMODE != libc::O_RDONLY {
             return reply.error(if self.uploads.lock().unwrap().contains_key(&ino) { EBADF } else { EROFS });
+        }
+        if root_file_by_ino(ino).is_some() {
+            return reply.opened(0, fuser::consts::FOPEN_KEEP_CACHE);
         }
         let tree = self.shared.tree.load();
         let Some(n) = tree.node(ino) else { return reply.error(ENOENT) };
@@ -321,6 +344,11 @@ impl Filesystem for ReFs {
 
     fn read(&mut self, _req: &Request<'_>, ino: u64, fh: u64, offset: i64, size: u32, _flags: i32, _lock: Option<u64>, reply: ReplyData) {
         let offset = offset.max(0) as u64;
+        if let Some(data) = root_file_by_ino(ino) {
+            let start = (offset as usize).min(data.len());
+            let end = (start + size as usize).min(data.len());
+            return reply.data(&data[start..end]);
+        }
         // Reading back a file being copied in (some tools verify what they wrote).
         if let Some(u) = self.uploads.lock().unwrap().get(&fh).filter(|_| fh >= FIRST_UPLOAD_INO) {
             let end = (offset + u64::from(size)).min(u.size);
@@ -371,7 +399,8 @@ impl Filesystem for ReFs {
             return reply.error(e);
         }
         let Some(name) = name.to_str().map(str::to_owned) else { return reply.error(EINVAL) };
-        if self.shared.tree.load().lookup(parent, &name).is_some() {
+        let reserved = parent == re_proto::index::ino::ROOT && ROOT_FILES.iter().any(|f| f.1 == name);
+        if reserved || self.shared.tree.load().lookup(parent, &name).is_some() {
             return reply.error(EEXIST);
         }
         let (shared, attr_of) = (self.shared.clone(), self.attr_fn());
@@ -504,6 +533,9 @@ impl Filesystem for ReFs {
     }
 
     fn getxattr(&mut self, _req: &Request<'_>, ino: u64, name: &OsStr, size: u32, reply: ReplyXattr) {
+        if root_file_by_ino(ino).is_some() {
+            return reply.error(libc::ENODATA);
+        }
         let tree = self.shared.tree.load();
         let Some(n) = tree.node(ino) else { return reply.error(ENOENT) };
         let Some((_, v)) = Self::xattrs(n).into_iter().find(|(k, _)| OsStr::new(k) == name) else { return reply.error(libc::ENODATA) };
@@ -515,6 +547,10 @@ impl Filesystem for ReFs {
     }
 
     fn listxattr(&mut self, _req: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr) {
+        if root_file_by_ino(ino).is_some() {
+            // No attributes: a size query gets 0, a buffer gets empty data.
+            return if size == 0 { reply.size(0) } else { reply.data(&[]) };
+        }
         let tree = self.shared.tree.load();
         let Some(n) = tree.node(ino) else { return reply.error(ENOENT) };
         let mut names = Vec::new();
@@ -575,6 +611,15 @@ async fn make_for_stat(shared: &Arc<Shared>, node: &Node) -> bool {
 }
 
 impl ReFs {
+    fn root_file_attr(&self, ino: u64, data: &[u8]) -> FileAttr {
+        static MOUNTED_AT: std::sync::OnceLock<SystemTime> = std::sync::OnceLock::new();
+        let t = *MOUNTED_AT.get_or_init(SystemTime::now);
+        let mut a = self.base_attr(ino, false, data.len() as u64);
+        a.perm = 0o444;
+        (a.atime, a.mtime, a.ctime, a.crtime) = (t, t, t, t);
+        a
+    }
+
     /// A generated file (rendered notebook, annotated PDF, …) that hasn't been made
     /// yet, while we're online: its size is unknown until it is. File managers and
     /// browsers treat a 0-byte file as empty, so stats make it first.
