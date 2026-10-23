@@ -41,7 +41,7 @@ pub struct Options<'a> {
     /// If non-empty, TCP clients must have reached one of these local addresses.
     pub allow_local: &'a [std::net::IpAddr],
     /// TLS for clients not trusted by address (Wi-Fi). Without it they're refused.
-    pub tls: Option<Arc<rustls::ServerConfig>>,
+    pub tls: Option<Arc<crate::tls::Config>>,
     pub verbose: bool,
     /// Exit after this long with no clients (for socket activation).
     pub idle_exit: Option<Duration>,
@@ -307,7 +307,7 @@ fn restart_xochitl(verbose: bool) {
 }
 
 /// Read, answer and write for one connection. Ok(false) once it's closed.
-fn service(conn: &mut Conn, store: &mut Store, effects: &mut Effects, tls: Option<&Arc<rustls::ServerConfig>>) -> io::Result<bool> {
+fn service(conn: &mut Conn, store: &mut Store, effects: &mut Effects, tls: Option<&Arc<crate::tls::Config>>) -> io::Result<bool> {
     let state = match conn.fill(tls) {
         Ok(s) => s,
         Err(e) => {

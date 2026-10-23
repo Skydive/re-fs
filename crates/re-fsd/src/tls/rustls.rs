@@ -1,7 +1,4 @@
-//! TLS for Wi-Fi clients: TLS 1.3 (rustls + ring) with mutual authentication by
-//! ssh-style ed25519 keys. Our identity is a key kept in /home/root/re-fs (the
-//! client pins it, fetched once over ssh); the client's is its ssh key, which must
-//! be in authorized_keys.
+//! The rustls + ring backend.
 
 use std::fs;
 use std::io;
@@ -16,6 +13,48 @@ use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{DigitallySignedStruct, DistinguishedName, ServerConfig, SignatureScheme};
 
 use crate::sshauth;
+
+/// One connection's TLS state, buffer-oriented (see tls/mod.rs).
+pub struct Session(rustls::ServerConnection);
+
+impl Session {
+    pub fn new(cfg: &Arc<Config>) -> io::Result<Self> {
+        rustls::ServerConnection::new(cfg.clone()).map(Session).map_err(io::Error::other)
+    }
+
+    /// Feed bytes read from the socket.
+    pub fn read_tls(&mut self, r: &mut dyn io::Read) -> io::Result<usize> {
+        self.0.read_tls(r)
+    }
+
+    /// Run the handshake / decrypt what was fed. A refused client certificate is
+    /// an error (its alert goes out with the next write_tls).
+    pub fn process(&mut self) -> io::Result<()> {
+        self.0.process_new_packets().map(|_| ()).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))
+    }
+
+    /// Decrypted bytes: WouldBlock when there are none yet, Ok(0) on close_notify.
+    pub fn read_plain(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        io::Read::read(&mut self.0.reader(), buf)
+    }
+
+    /// Queue plaintext; returns how much was taken (0 = buffer full or handshake pending).
+    pub fn write_plain(&mut self, buf: &[u8]) -> io::Result<usize> {
+        io::Write::write(&mut self.0.writer(), buf)
+    }
+
+    pub fn wants_write(&self) -> bool {
+        self.0.wants_write()
+    }
+
+    /// Write pending TLS records to the socket.
+    pub fn write_tls(&mut self, w: &mut dyn io::Write) -> io::Result<usize> {
+        self.0.write_tls(w)
+    }
+}
+
+pub type Key = rcgen::KeyPair;
+pub type Config = ServerConfig;
 
 /// Our key pair: created on first use, kept as PKCS#8 DER (0600).
 pub fn load_or_create_key(path: &Path) -> io::Result<rcgen::KeyPair> {

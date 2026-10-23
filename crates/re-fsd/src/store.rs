@@ -61,6 +61,10 @@ impl Store {
         self.items.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     pub fn path(&self, uuid: &Uuid, kind: FileKind) -> PathBuf {
         self.dir.join(format!("{uuid}{}", kind.suffix()))
     }

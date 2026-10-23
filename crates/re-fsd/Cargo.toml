@@ -13,5 +13,20 @@ inotify = { version = "0.11", default-features = false }
 rustix = { version = "1", features = ["fs"] }
 lexopt = "0.3"
 base64 = "0.22"
-rustls.workspace = true
-rcgen.workspace = true
+rustls = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+openssl = { version = "0.10", optional = true }
+
+[features]
+default = ["rustls"]
+# TLS backend for Wi-Fi clients (pick one): rustls + ring, statically linked…
+rustls = ["dep:rustls", "dep:rcgen"]
+# …or the system OpenSSL 3 (the tablet's /usr/lib/libssl.so.3), for a smaller binary.
+openssl = ["dep:openssl"]
+
+[dev-dependencies]
+# The tests' TLS client is always rustls (it's what re-fs uses), so they also
+# check interoperability with the openssl backend.
+rustls = { workspace = true }
+rcgen = { workspace = true }
+base64 = "0.22"

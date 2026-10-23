@@ -3,11 +3,7 @@
 //! re-fsd --stdio                    speak the protocol on stdin/stdout (over ssh)
 //! re-fsd --listen 127.0.0.1:7745    serve TCP (reached through WireGuard / USB)
 
-mod conn;
-mod server;
-mod sshauth;
-mod store;
-mod tls;
+use re_fsd::{server, sshauth, tls};
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
