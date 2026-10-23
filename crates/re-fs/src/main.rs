@@ -23,7 +23,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use re_proto::index::tree::{Node, NodeKind, Tree, TreeOptions};
-use re_proto::wire::{decompress_entries, Request, Response};
+use re_proto::wire::{decompress_entries, Response};
 
 use crate::transport::{HostPort, Target};
 
@@ -64,6 +64,10 @@ struct Remote {
     /// re-fsd's TCP port with --usb (the tablet service's port).
     #[arg(long, default_value_t = AGENT_PORT)]
     port: u16,
+    /// Compression for index and page replies: auto (by measured link speed), none,
+    /// lz4 or zstd.
+    #[arg(long, default_value = "auto")]
+    codec: String,
     /// ed25519 private key for TLS (--tls) [default: ~/.ssh/id_ed25519].
     #[arg(long)]
     identity: Option<PathBuf>,
@@ -71,6 +75,12 @@ struct Remote {
 
 impl Remote {
     fn targets(&self) -> Vec<Target> {
+        if self.codec != "auto" {
+            match self.codec.parse() {
+                Ok(c) => client::set_codec(c),
+                Err(e) => eprintln!("re-fs: {e}; using auto"),
+            }
+        }
         if let Some(id) = &self.identity {
             auth::set_identity(id.clone());
         }
@@ -262,7 +272,7 @@ async fn push(targets: Vec<Target>, files: &[PathBuf], to: &str) -> Result<()> {
     use re_proto::wire::{Expect, Plan};
 
     let c = connect_any(&targets).await?;
-    let Response::Index { entries, generation, .. } = c.call_msg(&Request::GetIndex { since: None }).await? else {
+    let Response::Index { entries, generation, .. } = c.get_index(None).await? else {
         bail!("expected an index");
     };
     let tree = Tree::build(&decompress_entries(&entries)?, generation, &TreeOptions::default());
@@ -311,7 +321,7 @@ async fn fetch_tree(targets: Vec<Target>, opts: &TreeOptions) -> Result<Tree> {
     let Some(link) = link else { bail!("can't reach the tablet: {}", errors.join("; ")) };
     let c = client::Client::start(link);
     c.hello().await?;
-    let Response::Index { generation, entries, .. } = c.call_msg(&Request::GetIndex { since: None }).await? else {
+    let Response::Index { generation, entries, .. } = c.get_index(None).await? else {
         bail!("expected an index");
     };
     Ok(Tree::build(&decompress_entries(&entries)?, generation, opts))

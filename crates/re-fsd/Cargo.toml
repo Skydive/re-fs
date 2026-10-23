@@ -21,7 +21,7 @@ openssl = { version = "0.10", optional = true }
 default = ["openssl"]
 # TLS backend for Wi-Fi clients (pick one): the system OpenSSL 3 (the tablet's
 # /usr/lib/libssl.so.3), for a small agent…
-openssl = ["dep:openssl"]
+openssl = ["dep:openssl", "re-proto/zstd-system"]
 # …or rustls + ring, statically linked (no system libraries needed).
 rustls = ["dep:rustls", "dep:rcgen"]
 

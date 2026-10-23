@@ -41,10 +41,10 @@
       common = {
         inherit src;
         strictDeps = true;
-        # re-fsd's default TLS backend is the system OpenSSL.
+        # re-fsd's default build links the system OpenSSL and libzstd.
         nativeBuildInputs = [ pkgs.pkg-config ];
-        buildInputs = [ pkgs.openssl ];
-        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
+        buildInputs = [ pkgs.openssl pkgs.zstd ];
+        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl pkgs.zstd ];
       };
       cargoArtifacts = craneLib.buildDepsOnly common;
 
@@ -96,6 +96,12 @@
         OPENSSL_NO_VENDOR = "1";
         "ARMV7_UNKNOWN_LINUX_GNUEABIHF_OPENSSL_LIB_DIR" = "${armPkgs.openssl.out}/lib";
         "ARMV7_UNKNOWN_LINUX_GNUEABIHF_OPENSSL_INCLUDE_DIR" = "${armPkgs.openssl.dev}/include";
+        # libzstd: the tablet's /usr/lib/libzstd.so.1 at run time (1.5.5; only stable
+        # functions are used), nixpkgs' cached ARMv7 build to link against.
+        PKG_CONFIG_ALLOW_CROSS = "1";
+        "PKG_CONFIG_PATH_armv7_unknown_linux_gnueabihf" = "${armPkgs.zstd.dev}/lib/pkgconfig";
+        "PKG_CONFIG_SYSROOT_DIR_armv7_unknown_linux_gnueabihf" = "/";
+        "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_RUSTFLAGS" = "-L native=${armPkgs.zstd.out}/lib";
       };
       re-fsd-armv7 = craneLib.buildPackage (armGnuCommon // {
         cargoArtifacts = craneLib.buildDepsOnly armGnuCommon;
@@ -166,9 +172,9 @@
 
       devShells.${system}.default = craneLib.devShell {
         inputsFrom = [ self.packages.${system}.re-fs ];
-        packages = [ pkgs.rust-analyzer pkgs.python3 pkgs.pkg-config pkgs.openssl ];
-        # re-fsd's tests link the system OpenSSL (its default backend).
-        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
+        packages = [ pkgs.rust-analyzer pkgs.python3 pkgs.pkg-config pkgs.openssl pkgs.zstd ];
+        # re-fsd's tests link the system OpenSSL and libzstd.
+        LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.openssl pkgs.zstd ];
       };
     };
 }

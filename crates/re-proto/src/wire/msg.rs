@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::pack::{pack, unpack, Codec};
 use super::ProtoError;
 use crate::index::{Entry, FileKind};
 
@@ -16,6 +17,8 @@ pub enum Request {
     /// instance `instance` (from Hello). Anything else gets the whole index.
     GetIndex {
         since: Option<(u64, u64)>,
+        /// How to compress the reply.
+        codec: Codec,
     },
     /// Bytes of one file. Answered by a Data frame (possibly shorter at EOF), or by
     /// `Err(Changed)` when `expect_mtime_ms` is set and the file's mtime differs.
@@ -40,6 +43,8 @@ pub enum Request {
     ReadPages {
         uuid: Uuid,
         names: Vec<String>,
+        /// How to compress the reply.
+        codec: Codec,
     },
     /// Subscribe to `Event`s on this request id.
     Watch,
@@ -99,7 +104,7 @@ pub enum Response {
         /// on top of the generation the client asked from.
         full: bool,
         removed: Vec<Uuid>,
-        /// lz4-compressed postcard `Vec<Entry>`; see [`compress_entries`].
+        /// postcard `Vec<Entry>`, packed with the requested codec; see [`compress_entries`].
         entries: Vec<u8>,
     },
     /// Something changed; the index is now at `generation`.
@@ -111,8 +116,8 @@ pub enum Response {
         message: String,
     },
     Ok,
-    /// Answer to `ReadPages`: lz4-compressed postcard `Vec<PageData>`; see
-    /// [`compress_pages`].
+    /// Answer to `ReadPages`: postcard `Vec<PageData>`, packed with the requested
+    /// codec; see [`compress_pages`].
     Pages {
         pages: Vec<u8>,
     },
@@ -144,25 +149,21 @@ pub struct PageData {
     pub data: Vec<u8>,
 }
 
-pub fn compress_pages(pages: &[PageData]) -> Vec<u8> {
-    let raw = postcard::to_stdvec(pages).expect("serialising pages");
-    lz4_flex::compress_prepend_size(&raw)
+pub fn compress_pages(pages: &[PageData], codec: Codec) -> Vec<u8> {
+    pack(codec, &postcard::to_stdvec(pages).expect("serialising pages"))
 }
 
 pub fn decompress_pages(blob: &[u8]) -> Result<Vec<PageData>, ProtoError> {
-    let raw = lz4_flex::decompress_size_prepended(blob)?;
-    Ok(postcard::from_bytes(&raw)?)
+    Ok(postcard::from_bytes(&unpack(blob)?)?)
 }
 
-pub fn compress_entries(entries: &[&Entry]) -> Vec<u8> {
+pub fn compress_entries(entries: &[&Entry], codec: Codec) -> Vec<u8> {
     // postcard into a Vec cannot fail for these types.
-    let raw = postcard::to_stdvec(entries).expect("serialising entries");
-    lz4_flex::compress_prepend_size(&raw)
+    pack(codec, &postcard::to_stdvec(entries).expect("serialising entries"))
 }
 
 pub fn decompress_entries(blob: &[u8]) -> Result<Vec<Entry>, ProtoError> {
-    let raw = lz4_flex::decompress_size_prepended(blob)?;
-    Ok(postcard::from_bytes(&raw)?)
+    Ok(postcard::from_bytes(&unpack(blob)?)?)
 }
 
 #[cfg(test)]
@@ -176,7 +177,7 @@ mod tests {
             PageData { name: "a.rm".into(), mtime_ms: 1, data: [1, 2, 3].repeat(100) },
             PageData { name: "b-metadata.json".into(), mtime_ms: 2, data: vec![] },
         ];
-        let blob = compress_pages(&p);
+        let blob = compress_pages(&p, Codec::Lz4);
         assert!(blob.len() < 300);
         assert_eq!(decompress_pages(&blob).unwrap(), p);
     }
@@ -190,7 +191,7 @@ mod tests {
             files: vec![FileStat { kind: FileKind::Pdf, size: 123, mtime_ms: 456 }],
             pages: vec![],
         };
-        let blob = compress_entries(&[&e, &e]);
+        let blob = compress_entries(&[&e, &e], Codec::Zstd);
         assert!(blob.len() < 2 * e.metadata.len());
         assert_eq!(decompress_entries(&blob).unwrap(), vec![e.clone(), e]);
     }

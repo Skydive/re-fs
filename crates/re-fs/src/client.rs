@@ -2,10 +2,10 @@
 //! replies routed back by request id.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use re_proto::wire::{encode_msg, ErrorCode, FrameDecoder, FrameKind, Plan, Request, Response};
+use re_proto::wire::{encode_msg, Codec, ErrorCode, FrameDecoder, FrameKind, Plan, Request, Response};
 use re_proto::index::FileKind;
 use re_proto::PROTO_VERSION;
 use uuid::Uuid;
@@ -34,7 +34,24 @@ enum Sink {
     Stream(mpsc::UnboundedSender<Response>),
 }
 
+/// Below this, a link counts as slow and gets zstd (measured: zstd level 1 pays
+/// off on WireGuard at ~1.3 MB/s; lz4 or nothing wins on USB/Wi-Fi at 10–24 MB/s).
+const SLOW_LINK_BYTES_PER_SEC: u64 = 5_000_000;
+/// Replies at least this big are used to measure the link.
+const MEASURE_MIN_BYTES: usize = 256 * 1024;
+
+static CODEC_OVERRIDE: std::sync::OnceLock<Codec> = std::sync::OnceLock::new();
+
+/// Use this codec for everything instead of choosing by link speed (--codec).
+pub fn set_codec(c: Codec) {
+    let _ = CODEC_OVERRIDE.set(c);
+}
+
 struct Inner {
+    /// Latest measured transfer rate (bytes/s), 0 = not measured yet.
+    rate: AtomicU64,
+    /// The transport says it's fast (USB), for before anything is measured.
+    fast_hint: bool,
     next_id: AtomicU32,
     pending: Mutex<HashMap<u32, Sink>>,
     tx: mpsc::UnboundedSender<Vec<u8>>,
@@ -51,8 +68,15 @@ impl Client {
     pub fn start(link: Link) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (closed_tx, closed) = watch::channel(false);
-        let inner = Arc::new(Inner { next_id: AtomicU32::new(1), pending: Mutex::new(HashMap::new()), tx, closed });
-        let Link { mut reader, mut writer, child } = link;
+        let inner = Arc::new(Inner {
+            rate: AtomicU64::new(0),
+            fast_hint: link.fast,
+            next_id: AtomicU32::new(1),
+            pending: Mutex::new(HashMap::new()),
+            tx,
+            closed,
+        });
+        let Link { mut reader, mut writer, child, .. } = link;
 
         let closed_w = closed_tx.clone();
         tokio::spawn(async move {
@@ -80,11 +104,19 @@ impl Client {
             let _child = child; // dropping it kills ssh
             let mut dec = FrameDecoder::new();
             let mut buf = vec![0u8; 256 * 1024];
+            // When the first bytes of the frame now arriving came in: big frames give
+            // the link's speed (bytes / time from first to last byte), which leaves
+            // out the tablet's time to prepare the reply.
+            let mut frame_started: Option<std::time::Instant> = None;
             'read: loop {
                 let n = match reader.read(&mut buf).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
+                let now = std::time::Instant::now();
+                if dec.pending() == 0 {
+                    frame_started = Some(now);
+                }
                 dec.feed(&buf[..n]);
                 loop {
                     let frame = match dec.next_frame() {
@@ -96,6 +128,11 @@ impl Client {
                         }
                     };
                     let Some(inner) = weak.upgrade() else { break 'read };
+                    if let Some(t0) = frame_started.filter(|_| frame.payload.len() >= MEASURE_MIN_BYTES) {
+                        let secs = now.duration_since(t0).as_secs_f64().max(1e-3);
+                        inner.rate.store((frame.payload.len() as f64 / secs) as u64, Ordering::Relaxed);
+                    }
+                    frame_started = (dec.pending() > 0).then_some(now);
                     let mut pending = inner.pending.lock().unwrap();
                     let reply = match frame.kind {
                         FrameKind::Data => Reply::Data(frame.payload),
@@ -165,9 +202,39 @@ impl Client {
         }
     }
 
+    /// Whether the link is fast: measured if we can, else what the transport says.
+    fn fast(&self) -> bool {
+        match self.inner.rate.load(Ordering::Relaxed) {
+            0 => self.inner.fast_hint,
+            r => r >= SLOW_LINK_BYTES_PER_SEC,
+        }
+    }
+
+    /// Latest measured link speed, bytes/s (0 = not yet).
+    pub fn rate(&self) -> u64 {
+        self.inner.rate.load(Ordering::Relaxed)
+    }
+
+    /// Codec for index replies: compresses ~4x (lz4) / ~7x (zstd), so worth it on
+    /// fast links too; zstd's extra CPU only pays on slow ones.
+    pub fn index_codec(&self) -> Codec {
+        *CODEC_OVERRIDE.get().unwrap_or(&if self.fast() { Codec::Lz4 } else { Codec::Zstd })
+    }
+
+    /// Codec for stroke pages: they barely compress (lz4 −6%, zstd −17%), so on a
+    /// fast link compressing costs more time than it saves.
+    pub fn pages_codec(&self) -> Codec {
+        *CODEC_OVERRIDE.get().unwrap_or(&if self.fast() { Codec::None } else { Codec::Zstd })
+    }
+
+    /// The index: whole, or the delta since `since`.
+    pub async fn get_index(&self, since: Option<(u64, u64)>) -> Result<Response, CallError> {
+        self.call_msg(&Request::GetIndex { since, codec: self.index_codec() }).await
+    }
+
     /// Several page-folder files in one round trip; missing ones are left out.
     pub async fn read_pages(&self, uuid: Uuid, names: Vec<String>) -> Result<Vec<re_proto::wire::PageData>, CallError> {
-        match self.call_msg(&Request::ReadPages { uuid, names }).await? {
+        match self.call_msg(&Request::ReadPages { uuid, names, codec: self.pages_codec() }).await? {
             Response::Pages { pages } => re_proto::wire::decompress_pages(&pages).map_err(|_| CallError::Unexpected),
             _ => Err(CallError::Unexpected),
         }

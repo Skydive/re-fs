@@ -14,8 +14,10 @@
 
 mod codec;
 mod msg;
+mod pack;
 
 pub use codec::{encode_data_header, encode_msg, Frame, FrameDecoder, FrameKind, HEADER_LEN, MAX_FRAME};
+pub use pack::{pack, unpack, Codec, CHUNK as PACK_CHUNK};
 pub use msg::{compress_entries, compress_pages, decompress_entries, decompress_pages, ErrorCode, Expect, Op, PageData, Plan, Request, Response, MAX_READ};
 
 #[derive(Debug, thiserror::Error)]
@@ -28,4 +30,6 @@ pub enum ProtoError {
     Decode(#[from] postcard::Error),
     #[error("bad compressed index: {0}")]
     Decompress(#[from] lz4_flex::block::DecompressError),
+    #[error("bad compressed payload")]
+    Packed,
 }

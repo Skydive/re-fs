@@ -10,7 +10,7 @@ use anyhow::{bail, Result};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use re_proto::index::tree::{Invalidation, Tree, TreeOptions};
 use re_proto::index::Entry;
-use re_proto::wire::{decompress_entries, Request, Response};
+use re_proto::wire::{decompress_entries, Response};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -166,7 +166,7 @@ async fn connected(
 /// Fetch the index (a delta when we can), rebuild the tree, invalidate what changed.
 async fn sync(client: &Client, shared: &Shared, opts: &TreeOptions, index: &mut Index) -> Result<()> {
     let t0 = Instant::now();
-    let Response::Index { instance, generation, full, removed, entries } = client.call_msg(&Request::GetIndex { since: index.at }).await? else {
+    let Response::Index { instance, generation, full, removed, entries } = client.get_index(index.at).await? else {
         bail!("expected an index");
     };
     let n = entries.len();
@@ -189,10 +189,12 @@ async fn sync(client: &Client, shared: &Shared, opts: &TreeOptions, index: &mut 
         tokio::task::spawn_blocking(move || cache.save_index(&snapshot.values().collect::<Vec<_>>()));
     }
     shared.log(format_args!(
-        "generation {generation}: {} index, {changed} changed, {n} bytes, {} invalidations, {:?}",
+        "generation {generation}: {} index, {changed} changed, {n} bytes ({:?}), {} invalidations, {:?}; link {:.1} MB/s",
         if full { "full" } else { "delta" },
+        client.index_codec(),
         inval.len(),
-        t0.elapsed()
+        t0.elapsed(),
+        client.rate() as f64 / 1e6
     ));
     invalidate(shared, inval).await;
     Ok(())

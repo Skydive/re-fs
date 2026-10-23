@@ -126,13 +126,13 @@ impl<S: Read + Write> Client<S> {
     fn exercise(&mut self) -> std::io::Result<Vec<u8>> {
         let hello: Response = self.call(&Request::Hello { proto: PROTO_VERSION })?.decode().unwrap();
         assert!(matches!(hello, Response::Hello { proto: PROTO_VERSION, .. }), "{hello:?}");
-        let Response::Index { full: true, entries, .. } = self.call(&Request::GetIndex { since: None })?.decode().unwrap() else { panic!("no index") };
+        let Response::Index { full: true, entries, .. } = self.call(&Request::GetIndex { since: None, codec: re_proto::wire::Codec::Zstd })?.decode().unwrap() else { panic!("no index") };
         let entries = decompress_entries(&entries).unwrap();
         assert_eq!(entries.len(), 1);
         let size = entries[0].stat(FileKind::Pdf).unwrap().size;
         // Page files in one batch: the existing one comes back, the missing one is left out.
         let names = vec![format!("{PAGE}.rm"), "11111111-1111-4111-8111-111111111111.rm".to_string()];
-        let Response::Pages { pages } = self.call(&Request::ReadPages { uuid: DOC, names })?.decode().unwrap() else { panic!("no pages") };
+        let Response::Pages { pages } = self.call(&Request::ReadPages { uuid: DOC, names, codec: re_proto::wire::Codec::None })?.decode().unwrap() else { panic!("no pages") };
         let pages = re_proto::wire::decompress_pages(&pages).unwrap();
         assert_eq!(pages.len(), 1);
         assert_eq!((pages[0].name.as_str(), pages[0].data.as_slice()), (format!("{PAGE}.rm").as_str(), PAGE_DATA));

@@ -348,7 +348,7 @@ fn handle(conn: &mut Conn, store: &mut Store, frame: Frame, effects: &mut Effect
                 },
             );
         }
-        Request::GetIndex { since } => conn.send(id, &store.index(since)),
+        Request::GetIndex { since, codec } => conn.send(id, &store.index(since, codec)),
         Request::Read { uuid, file, offset, len, expect_mtime_ms } => {
             if !matches!(file, FileKind::Pdf | FileKind::Epub | FileKind::Metadata | FileKind::Content | FileKind::Pagedata) {
                 return conn.send(id, &err(ErrorCode::BadRequest, "unreadable file kind".into()));
@@ -377,8 +377,8 @@ fn handle(conn: &mut Conn, store: &mut Store, frame: Frame, effects: &mut Effect
             Err(e) if e.kind() == io::ErrorKind::InvalidInput => conn.send(id, &err(ErrorCode::BadRequest, e.to_string())),
             Err(e) => conn.send(id, &err(ErrorCode::Io, e.to_string())),
         },
-        Request::ReadPages { uuid, names } => match store.read_pages(&uuid, &names) {
-            Ok(pages) => conn.send(id, &Response::Pages { pages: re_proto::wire::compress_pages(&pages) }),
+        Request::ReadPages { uuid, names, codec } => match store.read_pages(&uuid, &names) {
+            Ok(pages) => conn.send(id, &Response::Pages { pages: re_proto::wire::compress_pages(&pages, codec) }),
             Err(e) if e.kind() == io::ErrorKind::InvalidInput => conn.send(id, &err(ErrorCode::BadRequest, e.to_string())),
             Err(e) => conn.send(id, &err(ErrorCode::Io, e.to_string())),
         },

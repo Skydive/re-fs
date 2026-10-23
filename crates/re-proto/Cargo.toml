@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+# Link the system libzstd (the tablet's /usr/lib/libzstd.so.1) instead of building it in.
+zstd-system = ["zstd/pkg-config"]
 # Parsing the tablet's JSON and building the tree. The client enables it; the agent doesn't.
 json = ["dep:serde_json"]
 
@@ -16,6 +18,7 @@ uuid.workspace = true
 thiserror.workspace = true
 postcard.workspace = true
 lz4_flex.workspace = true
+zstd = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 uuid.workspace = true

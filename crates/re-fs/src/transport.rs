@@ -175,6 +175,8 @@ pub struct Link {
     pub writer: Box<dyn AsyncWrite + Send + Unpin>,
     /// Keeps the ssh process alive; killed when the link is dropped.
     pub child: Option<Child>,
+    /// Known to be fast (USB) before anything has been measured.
+    pub fast: bool,
 }
 
 pub async fn connect(target: &Target) -> io::Result<Link> {
@@ -191,7 +193,7 @@ pub async fn connect(target: &Target) -> io::Result<Link> {
                 .spawn()?;
             let reader = Box::new(child.stdout.take().expect("piped stdout"));
             let writer = Box::new(child.stdin.take().expect("piped stdin"));
-            Ok(Link { reader, writer, child: Some(child) })
+            Ok(Link { reader, writer, child: Some(child), fast: false })
         }
         Target::Tls(hp) => {
             let cfg = crate::auth::client_config().map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, format!("{e:#}")))?;
@@ -201,12 +203,12 @@ pub async fn connect(target: &Target) -> io::Result<Link> {
                 .await
                 .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out"))??;
             let (r, w) = tokio::io::split(tls);
-            Ok(Link { reader: Box::new(r), writer: Box::new(w), child: None })
+            Ok(Link { reader: Box::new(r), writer: Box::new(w), child: None, fast: false })
         }
         Target::Tcp(hp) => {
             let s = connect_tcp(hp).await?;
             let (r, w) = s.into_split();
-            Ok(Link { reader: Box::new(r), writer: Box::new(w), child: None })
+            Ok(Link { reader: Box::new(r), writer: Box::new(w), child: None, fast: false })
         }
         Target::Usb { port } => {
             let addr = SocketAddr::from((USB_TABLET, *port));
@@ -215,7 +217,7 @@ pub async fn connect(target: &Target) -> io::Result<Link> {
                 .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, format!("no answer from {addr}")))??;
             s.set_nodelay(true)?;
             let (r, w) = s.into_split();
-            Ok(Link { reader: Box::new(r), writer: Box::new(w), child: None })
+            Ok(Link { reader: Box::new(r), writer: Box::new(w), child: None, fast: true })
         }
     }
 }

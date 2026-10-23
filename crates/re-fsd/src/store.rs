@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use re_proto::index::{is_page_file, Entry, FileKind, FileStat, PageFile};
-use re_proto::wire::{compress_entries, Op, Plan, Response};
+use re_proto::wire::{compress_entries, Codec, Op, Plan, Response};
 use uuid::Uuid;
 
 pub struct Store {
@@ -196,7 +196,7 @@ impl Store {
     }
 
     /// The whole index, or the delta since `since` if it's from this instance.
-    pub fn index(&self, since: Option<(u64, u64)>) -> Response {
+    pub fn index(&self, since: Option<(u64, u64)>, codec: Codec) -> Response {
         let since = since.and_then(|(inst, g)| (inst == self.instance && g <= self.generation).then_some(g));
         let (full, entries, removed) = match since {
             None => (true, self.items.values().map(|(e, _)| e).collect::<Vec<_>>(), Vec::new()),
@@ -211,7 +211,7 @@ impl Store {
             generation: self.generation,
             full,
             removed,
-            entries: compress_entries(&entries),
+            entries: compress_entries(&entries, codec),
         }
     }
 
@@ -337,7 +337,7 @@ mod tests {
 
         let mut s = Store::open(&d).unwrap();
         assert_eq!(s.len(), 1);
-        let (full, e, _, g1) = index_parts(s.index(None));
+        let (full, e, _, g1) = index_parts(s.index(None, Codec::Zstd));
         assert!(full);
         assert_eq!(e[0].stat(FileKind::Pdf).unwrap().size, 8);
 
@@ -347,17 +347,17 @@ mod tests {
 
         fs::write(d.join(format!("{b}.metadata")), b"{}").unwrap();
         assert!(s.refresh([b]).unwrap());
-        let (full, e, removed, g2) = index_parts(s.index(Some((s.instance(), g1))));
+        let (full, e, removed, g2) = index_parts(s.index(Some((s.instance(), g1)), Codec::Lz4));
         assert!(!full);
         assert_eq!((e.len(), e[0].uuid, removed.len(), g2), (1, b, 0, g1 + 1));
 
         fs::remove_file(d.join(format!("{a}.metadata"))).unwrap();
         assert!(s.refresh([a]).unwrap());
-        let (_, e, removed, _) = index_parts(s.index(Some((s.instance(), g2))));
+        let (_, e, removed, _) = index_parts(s.index(Some((s.instance(), g2)), Codec::None));
         assert_eq!((e.len(), removed), (0, vec![a]));
 
         // Another instance's generation gets the full index.
-        let (full, e, _, _) = index_parts(s.index(Some((s.instance() ^ 1, g2))));
+        let (full, e, _, _) = index_parts(s.index(Some((s.instance() ^ 1, g2)), Codec::Lz4));
         assert!(full);
         assert_eq!(e.len(), 1);
         fs::remove_dir_all(&d).unwrap();
