@@ -19,9 +19,20 @@ in
       default = "4010";
       description = "USB product id of the tablet's network gadget.";
     };
+    users = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "alice" ];
+      description = ''
+        Users who get /run/media/<user>/reMarkable, the home-manager module's default
+        mount point (where file managers list removable media). /run is cleared at
+        boot and /run/media/<user> belongs to root, so it's created here.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
+    systemd.tmpfiles.rules = map (u: "d /run/media/${u}/reMarkable 0700 ${u} - - -") cfg.users;
     services.udev.extraRules = ''
       # reMarkable USB network (RNDIS/Ethernet gadget) -> sys-subsystem-net-devices-remarkable.device
       SUBSYSTEM=="net", ATTRS{idVendor}=="${cfg.vendorId}", ATTRS{idProduct}=="${cfg.productId}", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/sys/subsystem/net/devices/remarkable"

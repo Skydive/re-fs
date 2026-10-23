@@ -134,16 +134,17 @@ unplugged. It's two small pieces from the re-fs flake:
 # flake inputs
 inputs.re-fs.url = "git+ssh://git@forge.example/user/re-fs.git";
 
-# NixOS configuration: name the tablet's USB network device for systemd
+# NixOS configuration: name the tablet's USB network device for systemd, and
+# create /run/media/<user>/reMarkable at boot for these users
 imports = [ inputs.re-fs.nixosModules.default ];
-services.re-fs.usbDevice.enable = true;
+services.re-fs.usbDevice = { enable = true; users = [ "you" ]; };
 
 # home-manager configuration: the mount itself
 imports = [ inputs.re-fs.homeManagerModules.default ];
 services.re-fs.usbMount = {
   enable = true;
-  mountPoint = "/home/you/rm";    # default: ~/rm
-  extraArgs = [ "--rw" ];         # any other `re-fs mount` options
+  # mountPoint = "/run/media/you/reMarkable";   # the default
+  extraArgs = [ "--rw" ];                       # any other `re-fs mount` options
 };
 ```
 
@@ -155,7 +156,7 @@ How it works:
    systemd name `sys-subsystem-net-devices-remarkable.device`.
 2. The user service `re-fs-usb.service` is `WantedBy` and `BindsTo` that device, so
    systemd starts it on plug-in and stops it on unplug.
-3. It runs `re-fs mount ~/rm --usb`. The interface appears a moment before the
+3. It runs `re-fs mount /run/media/<user>/reMarkable --usb`. The interface appears a moment before the
    tablet's DHCP gives your machine its 10.11.99.x address; re-fs just reconnects
    (or systemd restarts it) until the link is up. Unplugging stops the service; re-fs
    unmounts on SIGTERM, and a leftover mount is cleared with `fusermount3 -uz` if it
@@ -166,15 +167,49 @@ How it works:
 Any systemd distribution works with the files in `deploy/host/`:
 
 ```sh
-deploy/host/install-usb-automount.sh                            # mounts at ~/rm
+deploy/host/install-usb-automount.sh                            # /run/media/$USER/reMarkable
 deploy/host/install-usb-automount.sh --mountpoint ~/tablet -- --rw -v
 deploy/host/install-usb-automount.sh --uninstall
 ```
 
 It needs `re-fs` and `fusermount3` on your PATH. It installs
 `/etc/udev/rules.d/70-re-fs-remarkable.rules` (the same rule as the NixOS module; it
-asks for sudo for this step only), reloads udev so an already-plugged-in tablet is
-picked up, writes `~/.config/systemd/user/re-fs-usb.service` with the paths it found,
+asks for sudo for this and the next step), reloads udev so an already-plugged-in tablet
+is picked up, installs `/etc/tmpfiles.d/re-fs-$USER.conf` to create the mount point
+under `/run/media` at boot, writes `~/.config/systemd/user/re-fs-usb.service` with the paths it found,
+and enables it. Everything after `--` is passed to `re-fs mount`. If your tablet
+reports a different USB id, edit the rule file before installing.
+
+### Checking
+
+Check it with `systemctl --user status re-fs-usb` and
+`journalctl --user -u re-fs-usb`. It needs the tablet service (`re-fs deploy
+root@10.11.99.1 --service`) once. Don't mount the same mountpoint by hand at the
+same time.
+
+The tablet is mounted at **`/run/media/<user>/reMarkable`**, where removable media
+goes, so file managers built on GIO (Nautilus and friends) list it in the sidebar with
+an eject button. `/run` is cleared at boot and `/run/media/<user>` belongs to root, so
+the NixOS module (`users`) or the install script (`/etc/tmpfiles.d`) creates the mount
+point, owned by you, at every boot. Any other directory you own works too
+(`mountPoint`, or `--mountpoint` for the script). A real gvfs backend would be a C
+plugin inside GVfs, which isn't worth it for a sidebar entry.
+
+### Without Nix
+
+Any systemd distribution works with the files in `deploy/host/`:
+
+```sh
+deploy/host/install-usb-automount.sh                            # /run/media/$USER/reMarkable
+deploy/host/install-usb-automount.sh --mountpoint ~/tablet -- --rw -v
+deploy/host/install-usb-automount.sh --uninstall
+```
+
+It needs `re-fs` and `fusermount3` on your PATH. It installs
+`/etc/udev/rules.d/70-re-fs-remarkable.rules` (the same rule as the NixOS module; it
+asks for sudo for this and the next step), reloads udev so an already-plugged-in tablet
+is picked up, installs `/etc/tmpfiles.d/re-fs-$USER.conf` to create the mount point
+under `/run/media` at boot, writes `~/.config/systemd/user/re-fs-usb.service` with the paths it found,
 and enables it. Everything after `--` is passed to `re-fs mount`. If your tablet
 reports a different USB id, edit the rule file before installing.
 

@@ -19,9 +19,13 @@ in
     };
     mountPoint = lib.mkOption {
       type = lib.types.str;
-      default = "${config.home.homeDirectory}/rm";
-      defaultText = lib.literalExpression ''"''${config.home.homeDirectory}/rm"'';
-      description = "Where to mount the tablet.";
+      default = "/run/media/${config.home.username}/reMarkable";
+      defaultText = lib.literalExpression ''"/run/media/''${config.home.username}/reMarkable"'';
+      description = ''
+        Where to mount the tablet. The default is where file managers list removable
+        media; it's created at boot by the NixOS module
+        (services.re-fs.usbDevice.users). Elsewhere, any directory you own works.
+      '';
     };
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;

@@ -37,12 +37,12 @@ until it drops: `--usb` (only while the cable is in), each `--tls ADDR`, each
 
 The flake has a NixOS module (`nixosModules.default`, a udev rule naming the tablet's USB
 network device) and a home-manager module (`homeManagerModules.default`, a user service
-bound to that device), so the tablet mounts at `~/rm` when plugged in and unmounts when
-unplugged:
+bound to that device), so the tablet mounts at `/run/media/<user>/reMarkable` (listed by
+file managers as removable media) when plugged in and unmounts when unplugged:
 
 ```nix
-services.re-fs.usbDevice.enable = true;   # NixOS
-services.re-fs.usbMount.enable = true;    # home-manager (mountPoint, extraArgs)
+services.re-fs.usbDevice = { enable = true; users = [ "you" ]; };   # NixOS
+services.re-fs.usbMount.enable = true;                              # home-manager
 ```
 
 Without Nix, `deploy/host/install-usb-automount.sh [--mountpoint DIR] [-- MOUNT-ARGS…]`
