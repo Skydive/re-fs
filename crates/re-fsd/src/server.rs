@@ -179,7 +179,9 @@ pub fn run(opts: Options) -> io::Result<()> {
                     loop {
                         match l.accept() {
                             Ok((mut s, peer)) => {
-                                let local = s.local_addr().map(|a| a.ip()).ok();
+                                // systemd's socket is dual-stack: IPv4 clients show up as
+                                // ::ffff:a.b.c.d, which must match the IPv4 allow-list.
+                                let local = s.local_addr().map(|a| a.ip().to_canonical()).ok();
                                 let trusted = opts.allow_local.is_empty() || local.is_some_and(|ip| opts.allow_local.contains(&ip));
                                 if !trusted && opts.tls.is_none() {
                                     log(opts.verbose, format_args!("refused {peer} (reached us on {local:?})"));

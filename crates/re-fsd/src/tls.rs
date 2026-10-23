@@ -46,7 +46,11 @@ pub fn server_config(key: &rcgen::KeyPair, authorized_keys: PathBuf) -> io::Resu
     let cert = rcgen::CertificateParams::new(vec!["re-fsd".to_string()])
         .and_then(|p| p.self_signed(key))
         .map_err(io::Error::other)?;
-    let provider = Arc::new(ring::default_provider());
+    // ChaCha20-Poly1305 first: the tablet's Cortex-A7 has no AES instructions, and
+    // the client (with them) would otherwise pick AES-GCM.
+    let mut provider = ring::default_provider();
+    provider.cipher_suites.sort_by_key(|cs| cs.suite() != rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256);
+    let provider = Arc::new(provider);
     let verifier = Arc::new(AuthorizedKeys { path: authorized_keys, algs: provider.signature_verification_algorithms });
     let cfg = ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
@@ -54,6 +58,8 @@ pub fn server_config(key: &rcgen::KeyPair, authorized_keys: PathBuf) -> io::Resu
         .with_client_cert_verifier(verifier)
         .with_single_cert(vec![cert.der().clone()], PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())))
         .map_err(io::Error::other)?;
+    let mut cfg = cfg;
+    cfg.ignore_client_order = true;
     Ok(Arc::new(cfg))
 }
 

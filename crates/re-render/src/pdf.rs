@@ -23,20 +23,22 @@ pub struct Placement {
 }
 
 impl Placement {
-    /// A tablet-sized page (notebooks, inserted blank pages).
-    pub fn tablet_page() -> Self {
-        let h = PAGE_H * PT_PER_PX;
-        Placement { a: PT_PER_PX, d: -PT_PER_PX, c: 0.0, f: h }
+    /// A tablet page at 226 dpi covering `bx` = [x0, y0, x1, y1] in tablet pixels
+    /// (the screen, grown to hold strokes drawn beyond it). Returns the placement
+    /// and the page size in points.
+    pub fn canvas(bx: [f32; 4]) -> (Self, f32, f32) {
+        let [x0, y0, x1, y1] = bx;
+        let s = PT_PER_PX;
+        (Placement { a: s, d: -s, c: -x0 * s, f: y1 * s }, (x1 - x0) * s, (y1 - y0) * s)
     }
 
-    /// A PDF page of `w`×`h` points as the tablet shows it: scaled to fit the
-    /// screen, centred horizontally, top-aligned.
+    /// Strokes on a PDF page of `w`×`h` points (origin `x0`, `y0`). The tablet
+    /// stores them at its physical resolution (226 dpi), x relative to the page's
+    /// centre line and y down from its top, whatever the zoom they were drawn at.
+    /// (Checked against xochitl's own thumbnails of annotated A4 pages.)
     pub fn pdf_page(x0: f32, y0: f32, w: f32, h: f32) -> Self {
-        let px_per_pt = (PAGE_W / w).min(PAGE_H / h);
-        let s = 1.0 / px_per_pt;
-        let shown_w = w * px_per_pt;
-        let left_px = (PAGE_W - shown_w) / 2.0;
-        Placement { a: s, d: -s, c: x0 - left_px * s, f: y0 + h }
+        let s = PT_PER_PX;
+        Placement { a: s, d: -s, c: x0 + w / 2.0 - (PAGE_W / 2.0) * s, f: y0 + h }
     }
 
     fn cm(&self) -> Operation {
@@ -127,15 +129,28 @@ fn save(mut doc: Document) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-/// A notebook: one tablet-sized page per entry (`None` = a blank page).
+/// The screen, grown to include everything drawn on `page` (notebook pages are
+/// an open canvas: strokes can go above, below and beside the screen).
+fn canvas_box(page: &Page) -> [f32; 4] {
+    let screen = [0.0, 0.0, PAGE_W, PAGE_H];
+    match page.bounds() {
+        // A little margin so stroke widths at the edge aren't clipped.
+        Some([a, b, c, d]) => [screen[0].min(a - 10.0), screen[1].min(b - 10.0), screen[2].max(c + 10.0), screen[3].max(d + 10.0)],
+        None => screen,
+    }
+}
+
+/// A notebook: one page per entry (`None` = a blank page), each at least
+/// screen-sized and grown to hold all its strokes.
 pub fn notebook(pages: &[Option<Page>]) -> Result<Vec<u8>, Error> {
     let mut doc = Document::with_version("1.7");
     let pages_id = doc.new_object_id();
     let res = doc.add_object(dictionary! { "ExtGState" => ext_gstate() });
-    let (w, h) = (PAGE_W * PT_PER_PX, PAGE_H * PT_PER_PX);
     let mut kids = Vec::new();
     for p in pages {
-        let content = overlay(p.as_ref().unwrap_or(&Page::default()), Placement::tablet_page())?;
+        let page = p.as_ref().cloned().unwrap_or_default();
+        let (at, w, h) = Placement::canvas(canvas_box(&page));
+        let content = overlay(&page, at)?;
         let cid = doc.add_object(Stream::new(dictionary! {}, content));
         let pid = doc.add_object(dictionary! {
             "Type" => "Page", "Parent" => pages_id, "Resources" => res, "Contents" => cid,
@@ -194,23 +209,131 @@ fn page_box(doc: &Document, page: ObjectId) -> [f32; 4] {
     }
 }
 
+/// Ways real-world PDFs are slightly broken that viewers repair silently, as
+/// candidates to try in order: as is; junk (often a UTF-8 BOM) before the header
+/// removed, for files whose offsets don't count it; the header moved to byte 0
+/// with the gap filled by a comment, for files whose offsets do; and each of
+/// those with a missing final `%%EOF` added.
+fn repairs(pdf: &[u8]) -> Vec<std::borrow::Cow<'_, [u8]>> {
+    use std::borrow::Cow;
+    const H: &[u8] = b"%PDF-";
+    let mut out: Vec<Cow<[u8]>> = vec![pdf.into()];
+    if let Some(k) = pdf[..pdf.len().min(1024)].windows(H.len()).position(|w| w == H).filter(|&k| k > 0 && pdf.len() >= k + 8) {
+        out.push(pdf[k..].into());
+        let mut moved = pdf.to_vec();
+        moved.copy_within(k..k + 8, 0);
+        moved[8] = b'\n';
+        moved[9..k + 8].fill(b'%');
+        out.push(moved.into());
+    }
+    let tail = &pdf[pdf.len().saturating_sub(1024)..];
+    if !tail.windows(5).any(|w| w == b"%%EOF") {
+        let with_eof: Vec<Cow<[u8]>> = out.iter().map(|c| with_eof(c).into()).collect();
+        out.extend(with_eof);
+    }
+    out
+}
+
+/// Complete a truncated final `%%EOF` (or add one) without changing the line
+/// structure before it: lopdf reads the last lines strictly.
+fn with_eof(pdf: &[u8]) -> Vec<u8> {
+    let mut end = pdf.len();
+    while end > 0 && pdf[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let body = &pdf[..end];
+    for partial in [&b"%%EO"[..], b"%%E", b"%%", b"%"] {
+        if body.ends_with(partial) {
+            return [&body[..body.len() - partial.len()], b"%%EOF\n"].concat();
+        }
+    }
+    [body, b"\n%%EOF\n"].concat()
+}
+
+/// The last resort viewers use: find every `N G obj` in the file and append a fresh
+/// cross-reference table and trailer pointing at them (keeping /Root and /Info
+/// from the old trailer). Works for files with plain objects (no xref streams).
+fn rebuild_xref(pdf: &[u8]) -> Option<Vec<u8>> {
+    let mut offsets: std::collections::BTreeMap<u32, (usize, u16)> = Default::default();
+    let mut i = 0;
+    while i < pdf.len() {
+        let line_start = i == 0 || matches!(pdf[i - 1], b'\n' | b'\r');
+        if line_start && pdf[i].is_ascii_digit() {
+            // "<num> <gen> obj"
+            let rest = &pdf[i..pdf.len().min(i + 40)];
+            let text = String::from_utf8_lossy(rest);
+            let mut parts = text.split_ascii_whitespace();
+            if let (Some(n), Some(g), Some(kw)) = (parts.next(), parts.next(), parts.next()) {
+                if kw.starts_with("obj") {
+                    if let (Ok(n), Ok(g)) = (n.parse::<u32>(), g.parse::<u16>()) {
+                        offsets.insert(n, (i, g));
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    let trailer_at = pdf.windows(7).rposition(|w| w == b"trailer")?;
+    let tail = String::from_utf8_lossy(&pdf[trailer_at..]);
+    let reference = |key: &str| -> Option<String> {
+        let at = tail.find(key)? + key.len();
+        let mut p = tail[at..].split_ascii_whitespace();
+        let (n, g, r) = (p.next()?, p.next()?, p.next()?);
+        r.starts_with('R').then(|| format!("{key} {n} {g} R"))
+    };
+    let root = reference("/Root")?;
+    let info = reference("/Info").unwrap_or_default();
+    let size = offsets.keys().next_back().map_or(1, |n| n + 1);
+    let mut out = pdf.to_vec();
+    out.extend_from_slice(b"\n");
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+    for n in 1..size {
+        match offsets.get(&n) {
+            Some((off, g)) => out.extend_from_slice(format!("{off:010} {g:05} n \n").as_bytes()),
+            None => out.extend_from_slice(b"0000000000 65535 f \n"),
+        }
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {size} {root} {info} >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    Some(out)
+}
+
+/// Load a PDF, repairing what viewers would.
+fn load_tolerant(pdf: &[u8]) -> Result<Document, Error> {
+    let mut first_err = None;
+    let mut candidates = repairs(pdf);
+    // Last resort: rebuilt cross-reference tables, on the file with its header at 0.
+    let base: Vec<u8> = candidates.get(1).map(|c| c.to_vec()).unwrap_or_else(|| pdf.to_vec());
+    if let Some(rebuilt) = rebuild_xref(&base) {
+        candidates.push(rebuilt.into());
+    }
+    for candidate in candidates {
+        match Document::load_mem(&candidate) {
+            Ok(d) => return Ok(d),
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
+        }
+    }
+    Err(first_err.expect("at least one candidate").into())
+}
+
 /// The original PDF with strokes drawn on top, pages arranged as on the tablet.
 pub fn annotate(original: &[u8], specs: &[PageSpec]) -> Result<Vec<u8>, Error> {
-    let mut doc = Document::load_mem(original)?;
+    let mut doc = load_tolerant(original)?;
     let pages: BTreeMap<u32, ObjectId> = doc.get_pages();
     let root_pages = doc.catalog()?.get(b"Pages")?.as_reference()?;
     let gs_id = doc.add_object(ext_gstate());
     let mut kids = Vec::new();
     let mut used = std::collections::HashSet::new();
-    let mut last_box = [0.0, 0.0, PAGE_W * PT_PER_PX, PAGE_H * PT_PER_PX];
 
     for spec in specs {
         let src = spec.source.and_then(|i| pages.get(&(i + 1)).copied());
         let Some(src) = src else {
-            // A blank page inserted on the tablet: same size as the page before it.
-            let [_, _, w, h] = last_box;
-            let at = Placement::pdf_page(0.0, 0.0, w, h);
-            let content = overlay(spec.strokes.as_ref().unwrap_or(&Page::default()), at)?;
+            // A page inserted on the tablet: a notebook-style canvas.
+            let page = spec.strokes.clone().unwrap_or_default();
+            let (at, w, h) = Placement::canvas(canvas_box(&page));
+            let content = overlay(&page, at)?;
             let cid = doc.add_object(Stream::new(dictionary! {}, content));
             let pid = doc.add_object(dictionary! {
                 "Type" => "Page", "Parent" => root_pages, "Contents" => cid,
@@ -221,7 +344,6 @@ pub fn annotate(original: &[u8], specs: &[PageSpec]) -> Result<Vec<u8>, Error> {
             continue;
         };
         let bx = page_box(&doc, src);
-        last_box = bx;
         // The same original page shown twice gets its own copy.
         let pid = if used.insert(src) {
             src
@@ -282,4 +404,48 @@ pub fn annotate(original: &[u8], specs: &[PageSpec]) -> Result<Vec<u8>, Error> {
     root.set("Count", count);
     doc.prune_objects();
     save(doc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bom_before_header() {
+        // A minimal one-page PDF whose byte offsets count a UTF-8 BOM in front,
+        // as in files saved by tools that add one.
+        let mut bom: Vec<u8> = vec![0xef, 0xbb, 0xbf];
+        bom.extend_from_slice(b"%PDF-1.4\n");
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+        ];
+        let mut offsets = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offsets.push(bom.len());
+            bom.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = bom.len();
+        bom.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+        for o in &offsets {
+            bom.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        bom.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+        assert!(Document::load_mem(&bom).is_err(), "lopdf alone rejects it");
+        let out = annotate(&bom, &[PageSpec { source: Some(0), strokes: None }]).unwrap();
+        assert_eq!(Document::load_mem(&out).unwrap().get_pages().len(), 1);
+    }
+
+    #[test]
+    fn bom_added_afterwards_and_no_eof() {
+        // Offsets that don't count the BOM (it was added later), and no %%EOF.
+        let src = notebook(&[None]).unwrap();
+        let end = src.windows(5).rposition(|w| w == b"%%EOF").unwrap();
+        let mut bad = vec![0xef, 0xbb, 0xbf];
+        bad.extend_from_slice(&src[..end]);
+        assert!(Document::load_mem(&bad).is_err());
+        let out = annotate(&bad, &[PageSpec { source: Some(0), strokes: None }]).unwrap();
+        assert_eq!(Document::load_mem(&out).unwrap().get_pages().len(), 1);
+    }
 }

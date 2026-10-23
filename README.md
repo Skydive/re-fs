@@ -33,8 +33,8 @@ Format notes: [docs/format.md](docs/format.md). Protocol: [docs/protocol.md](doc
 | M3 PDF/EPUB reads, cache, offline | done |
 | M4 writes (mkdir, copy in, move, trash) | done |
 | M5 TCP over USB / Wi-Fi (ssh-key login) / WireGuard, tablet service | done |
-| M6/M7 notebooks, annotated PDFs, highlights, .rmdoc, views, xattrs, push | done (PDF stroke placement still to check on a real annotated PDF) |
-| M9 TLS for Wi-Fi (ssh keys as TLS identities) | done; not yet on the tablet |
+| M6/M7 notebooks, annotated PDFs, highlights, .rmdoc, views, xattrs, push | done |
+| M9 TLS for Wi-Fi (ssh keys as TLS identities) | done |
 
 ## Transports
 
@@ -86,6 +86,12 @@ Target = 127.0.0.1:7745
 ~/rm/.pinned/                      favourites
 ~/rm/.tags/<tag>/                  documents by tag
 ```
+
+Strokes on PDF pages are placed as the tablet stores them: 226 dpi, x from the
+page's centre, y from its top (checked against xochitl's thumbnails). Notebook and
+inserted pages grow to hold strokes drawn beyond the screen. PDFs that viewers
+repair silently (a BOM before `%PDF`, a truncated `%%EOF`, a broken xref table) are
+repaired the same way before annotating. Not drawn yet: page templates, typed text.
 
 Files marked as made by re-fs (`*.annotated.pdf`, notebooks, `.rmdoc`, `.highlights.md`)
 are made the first time they're opened and cached until the document changes. Their
@@ -172,6 +178,7 @@ tools/check-mirror.sh                                # compare with tools/paths.
 | TCP transport (2026-10-23) | `ls -R` | mount | 16 MB PDF |
 |---|---|---|---|
 | USB | 0.23 s | 0.24 s | 23 MiB/s |
-| Wi-Fi LAN (before TLS) | 0.39 s | 0.35 s | 10–15 MiB/s |
+| USB, TLS | 0.26 s | 0.30 s | 18 MiB/s |
+| Wi-Fi LAN, TLS | 0.40 s | 0.36 s | 10 MiB/s (radio-bound) |
 | WireGuard (via wireproxy and the hub) | 3.1 s | 3.1 s | 2–3 MiB/s |
 | re-read from cache (16 MB PDF) | 16 ms | 16 ms |

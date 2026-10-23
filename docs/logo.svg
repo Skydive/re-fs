@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 346 112" width="346" height="112" role="img" aria-labelledby="title">
+  <title id="title">re-fs</title>
+  <style>
+    .ink { stroke: #1f1f1d; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .fill { fill: #1f1f1d; }
+    .accent { stroke: #d9480f; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    @media (prefers-color-scheme: dark) {
+      .ink { stroke: #ecebe6; }
+      .fill { fill: #ecebe6; }
+      .accent { stroke: #ff922b; }
+    }
+  </style>
+
+  <!-- Tablet -->
+  <rect class="ink" x="6" y="6" width="80" height="100" rx="11" stroke-width="6"/>
+
+  <!-- Folder tree drawn on it -->
+  <g transform="translate(4 0)">
+    <path class="fill" d="M20 35 V23 a2.5 2.5 0 0 1 2.5 -2.5 h6 l3 3 h7.5 a2.5 2.5 0 0 1 2.5 2.5 v9 z"/>
+    <path class="ink" stroke-width="3.5" d="M28 39 V86 M28 50 H38 M28 68 H38 M28 86 H38"/>
+    <path class="fill" d="M42 56 V45 a2 2 0 0 1 2 -2 h6 l3 3 h15 a2 2 0 0 1 2 2 v8 z"/>
+    <path class="ink" stroke-width="3" d="M43.5 61.5 h10 l5 5 v9 h-15 z M53.5 61.5 v5 h5"/>
+    <path class="accent" stroke-width="3.5" d="M42 87 c3 -8 6 -8 8.5 0 s5.5 8 8.5 0 s5.5 -8 8.5 0"/>
+  </g>
+
+  <!-- Wordmark, drawn as pen strokes -->
+  <g class="ink" stroke-width="9">
+    <path d="M128 80 V38 M128 59 C128 45 138 37 152 37"/>
+    <path d="M165 58 H205 C205 45 196 36 185 36 C173 36 165 46 165 58 C165 71 174 80 186 80 C194 80 200 77 204 71"/>
+  </g>
+  <path class="accent" stroke-width="9" d="M219 60 H237"/>
+  <g class="ink" stroke-width="9">
+    <path d="M283 22 C279 19.5 261 17 261 34 V80 M250 39 H279"/>
+    <path d="M327 43 C323 38.5 317 36 310 36 C300 36 294 41 294 48 C294 56 302 57 310 58 C320 59 328 62 328 70 C328 77 321 80 311 80 C302 80 296 77 293 73"/>
+  </g>
+</svg>

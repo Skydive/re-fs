@@ -31,7 +31,9 @@ pub fn parse(bytes: &[u8]) -> Result<Page, Error> {
         let mut b = Reader::new(body);
         // A block we can't read is skipped rather than failing the page.
         let _ = match ty {
-            BLOCK_LINE_ITEM => line_item(&mut b, version).map(|l| page.lines.extend(l)),
+            // Erasing removes the erased strokes; the eraser's own path is only a
+            // record and isn't drawn (unlike v5, where the eraser painted white).
+            BLOCK_LINE_ITEM => line_item(&mut b, version).map(|l| page.lines.extend(l.filter(|l| !matches!(l.tool, Tool::Eraser | Tool::EraseArea)))),
             BLOCK_GLYPH_ITEM => glyph_item(&mut b).map(|h| page.highlights.extend(h)),
             _ => Ok(()),
         };
