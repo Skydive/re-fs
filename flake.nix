@@ -31,17 +31,15 @@
       common = {
         inherit src;
         strictDeps = true;
-        nativeBuildInputs = [ pkgs.pkg-config ];
-        buildInputs = [ pkgs.fuse3 ];
       };
       cargoArtifacts = craneLib.buildDepsOnly common;
 
-      member = name: craneLib.buildPackage (common // {
+      member = name: extra: craneLib.buildPackage (common // {
         inherit cargoArtifacts;
         pname = name;
         cargoExtraArgs = "-p ${name}";
         doCheck = false; # tests run once, in checks.tests
-      });
+      } // extra);
 
       # The tablet agent: static musl, linked by rust-lld (.cargo/config.toml).
       armCommon = {
@@ -58,8 +56,9 @@
     in
     {
       packages.${system} = {
-        re-fs = member "re-fs";
-        re-fsd = member "re-fsd";
+        # `re-fs deploy` installs the armv7 agent it was built with.
+        re-fs = member "re-fs" { RE_FSD_ARMV7 = "${re-fsd-armv7}/bin/re-fsd"; };
+        re-fsd = member "re-fsd" { };
         inherit re-fsd-armv7;
         default = self.packages.${system}.re-fs;
       };

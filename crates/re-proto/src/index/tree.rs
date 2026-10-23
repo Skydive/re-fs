@@ -79,6 +79,15 @@ pub struct TreeOptions {
     pub notebooks: bool,
 }
 
+/// Something the kernel may have cached that a tree change made stale.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Invalidation {
+    /// Attributes or contents of an inode (for a directory: its listing).
+    Inode(u64),
+    /// A name in a directory, positive or negative dentry.
+    Entry { parent: u64, name: String },
+}
+
 #[derive(Debug, Clone)]
 pub struct Tree {
     nodes: Vec<Node>,
@@ -266,6 +275,46 @@ impl Tree {
         }
         parts.reverse();
         parts.join("/")
+    }
+
+    /// What to invalidate in the kernel when replacing `self` with `newer`.
+    pub fn diff(&self, newer: &Tree) -> Vec<Invalidation> {
+        use Invalidation::{Entry, Inode};
+        let mut out = Vec::new();
+        for o in self.nodes() {
+            let o_parent = self.parent(o).ino;
+            match newer.node(o.ino) {
+                None => {
+                    out.push(Entry { parent: o_parent, name: o.name.clone() });
+                    out.push(Inode(o_parent));
+                }
+                Some(n) => {
+                    let n_parent = newer.parent(n).ino;
+                    if n.name != o.name || n_parent != o_parent {
+                        out.push(Entry { parent: o_parent, name: o.name.clone() });
+                        out.push(Entry { parent: n_parent, name: n.name.clone() });
+                        out.push(Inode(o_parent));
+                        out.push(Inode(n_parent));
+                    }
+                    if (n.kind, n.size, n.mtime_ms, n.ctime_ms, n.data_mtime_ms)
+                        != (o.kind, o.size, o.mtime_ms, o.ctime_ms, o.data_mtime_ms)
+                    {
+                        out.push(Inode(n.ino));
+                    }
+                }
+            }
+        }
+        for n in newer.nodes() {
+            if self.node(n.ino).is_none() {
+                let parent = newer.parent(n).ino;
+                // The name may be cached as "doesn't exist".
+                out.push(Entry { parent, name: n.name.clone() });
+                out.push(Inode(parent));
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// Every node except the root, in no particular order.
@@ -517,6 +566,28 @@ mod tests {
         for n in t1.nodes() {
             assert_eq!(t2.node(n.ino).map(|m| &m.name), Some(&n.name));
         }
+    }
+
+    #[test]
+    fn diff_reports_moves_adds_removes_and_changes() {
+        use Invalidation::{Entry as E, Inode as I};
+        let opts = TreeOptions::default();
+        let a = u(1).to_string();
+        let old = Tree::build(&[folder(1, "A", ""), doc(2, "x", "", "pdf", 1), doc(3, "gone", "", "pdf", 1), doc(4, "same", "", "pdf", 1)], 0, &opts);
+        let new = Tree::build(&[folder(1, "A", ""), doc(2, "x", &a, "pdf", 1), doc(4, "same", "", "pdf", 9), doc(5, "new", "", "pdf", 1)], 1, &opts);
+        let ino = |t: &Tree, id: u8| t.by_uuid(&u(id)).unwrap().ino;
+        let (root, dir_a) = (ino::ROOT, ino(&old, 1));
+        let d = old.diff(&new);
+        let expect = |i: &Invalidation| assert!(d.contains(i), "missing {i:?} in {d:?}");
+        expect(&E { parent: root, name: "x.pdf".into() });
+        expect(&E { parent: dir_a, name: "x.pdf".into() });
+        expect(&I(dir_a));
+        expect(&E { parent: root, name: "gone.pdf".into() });
+        expect(&I(ino(&old, 4)));
+        expect(&E { parent: root, name: "new.pdf".into() });
+        expect(&I(root));
+        assert!(!d.contains(&I(ino(&old, 2))), "a move alone doesn't change x's attributes");
+        assert!(old.diff(&old).is_empty());
     }
 
     #[test]

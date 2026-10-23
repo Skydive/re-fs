@@ -10,3 +10,9 @@ re-proto = { workspace = true, features = ["json"] }
 anyhow.workspace = true
 uuid.workspace = true
 clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "net", "process", "sync", "time", "macros", "signal"] }
+# Pure-Rust mounting through fusermount3: no libfuse needed at build or run time.
+fuser = { version = "0.15", default-features = false, features = ["abi-7-31"] }
+thiserror.workspace = true
+libc = "0.2"
+arc-swap = "1"

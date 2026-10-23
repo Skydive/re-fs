@@ -7,3 +7,8 @@ license.workspace = true
 
 [dependencies]
 re-proto.workspace = true
+uuid.workspace = true
+mio = { version = "1", features = ["os-poll", "os-ext", "net"] }
+inotify = { version = "0.11", default-features = false }
+rustix = { version = "1", features = ["fs"] }
+lexopt = "0.3"
