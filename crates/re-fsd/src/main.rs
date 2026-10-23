@@ -26,15 +26,18 @@ const USAGE: &str = "usage: re-fsd [--dir DIR] [--stdio] [--listen ADDR]... [--a
                   and go and Wi-Fi peers are refused
   --ssh-auth      accept other TCP clients (Wi-Fi) once they log in with an
                   ed25519 key from /home/root/.ssh/authorized_keys
+  --idle-exit SECS
+                  exit after SECS with no clients (with systemd socket activation,
+                  which starts re-fsd again on the next connection)
   -v, --verbose   log to stderr
   -V, --version";
 
 fn main() -> ExitCode {
     match parse() {
-        Ok(Some(Args { dir, stdio, listen, allow_local, ssh_auth, verbose })) => {
+        Ok(Some(Args { dir, stdio, listen, allow_local, ssh_auth, idle_exit, verbose })) => {
             // Only the real xochitl directory belongs to a running xochitl.
             let restart_xochitl = dir == std::path::Path::new(DEFAULT_DIR);
-            match server::run(server::Options { dir: &dir, stdio, listen: &listen, allow_local: &allow_local, ssh_auth, verbose, restart_xochitl }) {
+            match server::run(server::Options { dir: &dir, stdio, listen: &listen, allow_local: &allow_local, ssh_auth, idle_exit: idle_exit.map(std::time::Duration::from_secs), verbose, restart_xochitl }) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("re-fsd: {e}");
@@ -56,12 +59,13 @@ struct Args {
     listen: Vec<SocketAddr>,
     allow_local: Vec<IpAddr>,
     ssh_auth: bool,
+    idle_exit: Option<u64>,
     verbose: bool,
 }
 
 fn parse() -> Result<Option<Args>, lexopt::Error> {
     use lexopt::prelude::*;
-    let mut a = Args { dir: PathBuf::from(DEFAULT_DIR), stdio: false, listen: Vec::new(), allow_local: Vec::new(), ssh_auth: false, verbose: false };
+    let mut a = Args { dir: PathBuf::from(DEFAULT_DIR), stdio: false, listen: Vec::new(), allow_local: Vec::new(), ssh_auth: false, idle_exit: None, verbose: false };
     let mut p = lexopt::Parser::from_env();
     while let Some(arg) = p.next()? {
         match arg {
@@ -70,6 +74,7 @@ fn parse() -> Result<Option<Args>, lexopt::Error> {
             Long("listen") => a.listen.push(p.value()?.parse()?),
             Long("allow-local") => a.allow_local.push(p.value()?.parse()?),
             Long("ssh-auth") => a.ssh_auth = true,
+            Long("idle-exit") => a.idle_exit = Some(p.value()?.parse()?),
             Short('v') | Long("verbose") => a.verbose = true,
             Short('V') | Long("version") => {
                 println!("re-fsd {}", env!("CARGO_PKG_VERSION"));
@@ -82,8 +87,9 @@ fn parse() -> Result<Option<Args>, lexopt::Error> {
             _ => return Err(arg.unexpected()),
         }
     }
-    if !a.stdio && a.listen.is_empty() {
-        return Err("nothing to serve: give --stdio or --listen".into());
+    let activated = std::env::var("LISTEN_FDS").is_ok();
+    if !a.stdio && a.listen.is_empty() && !activated {
+        return Err("nothing to serve: give --stdio or --listen (or start from re-fsd.socket)".into());
     }
     Ok(Some(a))
 }

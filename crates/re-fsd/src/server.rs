@@ -42,6 +42,8 @@ pub struct Options<'a> {
     /// Accept other TCP clients once they log in with an authorized ssh key.
     pub ssh_auth: bool,
     pub verbose: bool,
+    /// Exit after this long with no clients (for socket activation).
+    pub idle_exit: Option<Duration>,
     /// Run `systemctl restart xochitl` after plans that ask for it.
     pub restart_xochitl: bool,
 }
@@ -79,12 +81,19 @@ pub fn run(opts: Options) -> io::Result<()> {
     log(opts.verbose, format_args!("indexed {} items in {:?}", store.len(), started.elapsed()));
 
     let mut listeners = Vec::new();
-    for (i, addr) in opts.listen.iter().enumerate() {
-        let mut l = TcpListener::bind(*addr)?;
-        poll.registry().register(&mut l, Token(FIRST_LISTENER + i), Interest::READABLE)?;
+    for addr in opts.listen {
+        listeners.push(TcpListener::bind(*addr)?);
         log(opts.verbose, format_args!("listening on {addr}"));
+    }
+    // Sockets handed over by systemd (re-fsd.socket).
+    for l in systemd_listeners()? {
+        log(opts.verbose, format_args!("listening on {} (socket activation)", l.local_addr()?));
         listeners.push(l);
     }
+    for (i, l) in listeners.iter_mut().enumerate() {
+        poll.registry().register(l, Token(FIRST_LISTENER + i), Interest::READABLE)?;
+    }
+    let mut idle_since = Instant::now();
 
     let mut conns: HashMap<usize, Conn> = HashMap::new();
     if opts.stdio {
@@ -107,7 +116,14 @@ pub fn run(opts: Options) -> io::Result<()> {
 
     loop {
         let due = dirty.as_ref().map(|d| (d.last + DEBOUNCE).min(d.first + DEBOUNCE_MAX));
-        let timeout = [due, restart_at].into_iter().flatten().min().map(|t| t.saturating_duration_since(Instant::now()));
+        // With --idle-exit, quit once nobody has been connected for that long
+        // (systemd starts us again on the next connection).
+        let idle_due = opts.idle_exit.filter(|_| conns.is_empty() && restart_at.is_none() && dirty.is_none()).map(|d| idle_since + d);
+        if idle_due.is_some_and(|t| Instant::now() >= t) {
+            log(opts.verbose, format_args!("idle; exiting"));
+            return Ok(());
+        }
+        let timeout = [due, restart_at, idle_due].into_iter().flatten().min().map(|t| t.saturating_duration_since(Instant::now()));
         match poll.poll(&mut events, timeout) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -198,6 +214,9 @@ pub fn run(opts: Options) -> io::Result<()> {
             restart_xochitl(opts.verbose);
         }
 
+        if !conns.is_empty() {
+            idle_since = Instant::now();
+        }
         let mut effects = Effects::default();
         let mut todo: Vec<usize> = touched.into_iter().collect();
         while let Some(k) = todo.pop() {
@@ -237,6 +256,26 @@ pub fn run(opts: Options) -> io::Result<()> {
             }
         }
     }
+}
+
+/// Listening sockets passed by systemd socket activation (sd_listen_fds).
+fn systemd_listeners() -> io::Result<Vec<TcpListener>> {
+    let ours = std::env::var("LISTEN_PID").ok().and_then(|p| p.parse::<u32>().ok()) == Some(std::process::id());
+    let n: i32 = std::env::var("LISTEN_FDS").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+    std::env::remove_var("LISTEN_PID");
+    std::env::remove_var("LISTEN_FDS");
+    std::env::remove_var("LISTEN_FDNAMES");
+    if !ours {
+        return Ok(Vec::new());
+    }
+    (3..3 + n)
+        .map(|fd| {
+            // SAFETY: systemd passes these fds to us and nothing else owns them.
+            let l = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+            l.set_nonblocking(true)?;
+            Ok(TcpListener::from_std(l))
+        })
+        .collect()
 }
 
 fn restart_xochitl(verbose: bool) {

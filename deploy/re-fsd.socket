@@ -1,0 +1,10 @@
+# re-fs agent, started on demand: systemd holds port 7745 and starts
+# re-fsd.service on the first connection; re-fsd exits after 5 idle minutes.
+[Unit]
+Description=re-fs agent socket
+
+[Socket]
+ListenStream=7745
+
+[Install]
+WantedBy=sockets.target

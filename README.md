@@ -39,8 +39,10 @@ re-fs connects it tries them in that order, skipping `--usb` unless a reMarkable
 network interface is up (a USB NIC with a 10.11.99.x address). It stays on whichever
 link it got until that link drops.
 
-The tablet service (`deploy/re-fsd.service`, installed by `re-fs deploy --service`)
-listens on port 7745. Clients that reach it on 10.11.99.1 (USB) or 127.0.0.1 (where
+The tablet service is socket-activated (`deploy/re-fsd.socket` and
+`re-fsd.service`, installed by `re-fs deploy --service`): systemd holds port 7745,
+starts re-fsd on the first connection, and re-fsd exits after 5 minutes with no
+clients, so nothing runs on the tablet while you're not using it. Clients that reach it on 10.11.99.1 (USB) or 127.0.0.1 (where
 wireproxy's tunnels end) are trusted. Anyone else (Wi-Fi, e.g. `--tcp
 192.168.1.50:7745`) must log in with an ssh key: the agent sends a random
 challenge in its Hello, re-fs signs it with `~/.ssh/id_ed25519` (or `--identity`),

@@ -130,8 +130,8 @@ enum Cmd {
         /// The armv7 re-fsd binary (default: the one this re-fs was built with).
         #[arg(long)]
         binary: Option<PathBuf>,
-        /// Also install and start the re-fsd systemd service (TCP on USB and
-        /// loopback, port 7745). Without it, a running service is restarted.
+        /// Also install the re-fsd socket-activated service (port 7745). Without it,
+        /// a running agent is stopped so the next connection starts the new one.
         #[arg(long)]
         service: bool,
     },
@@ -234,6 +234,7 @@ async fn mount(targets: Vec<Target>, mountpoint: &Path, opts: TreeOptions, cache
 }
 
 const SERVICE_UNIT: &str = include_str!("../../../deploy/re-fsd.service");
+const SOCKET_UNIT: &str = include_str!("../../../deploy/re-fsd.socket");
 const INSTALL_SH: &str = include_str!("../../../deploy/install.sh");
 
 /// Copy re-fsd to AGENT_DIR on the tablet, replacing any running copy atomically,
@@ -252,12 +253,13 @@ fn deploy(host: &str, binary: Option<PathBuf>, service: bool) -> Result<()> {
         // Heredocs with a quoted delimiter: the files are written verbatim.
         script += &format!(
             "cat > {AGENT_DIR}/re-fsd.service <<'RE_FS_EOF'\n{SERVICE_UNIT}RE_FS_EOF\n\
+             cat > {AGENT_DIR}/re-fsd.socket <<'RE_FS_EOF'\n{SOCKET_UNIT}RE_FS_EOF\n\
              cat > {AGENT_DIR}/install.sh <<'RE_FS_EOF'\n{INSTALL_SH}RE_FS_EOF\n\
              chmod 755 {AGENT_DIR}/install.sh\nsh {AGENT_DIR}/install.sh\n"
         );
     } else {
-        // Keep a running service on the new binary.
-        script += "if systemctl is-active -q re-fsd 2>/dev/null; then systemctl restart re-fsd; echo 're-fsd service restarted'; fi\n";
+        // A running agent exits so the next connection starts the new binary.
+        script += "if systemctl is-active -q re-fsd.service 2>/dev/null; then systemctl stop re-fsd.service; echo 're-fsd stopped; the next connection starts the new one'; fi\n";
     }
     let mut child = std::process::Command::new("ssh")
         .args(["-o", "BatchMode=yes", host, &script])

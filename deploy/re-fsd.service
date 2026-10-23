@@ -1,20 +1,18 @@
-# re-fs agent on the reMarkable. Installed by `re-fs deploy --service`
-# (copied to /etc/systemd/system by /home/root/re-fs/install.sh).
+# re-fs agent on the reMarkable, started by re-fsd.socket on the first
+# connection. Installed by `re-fs deploy --service` (via /home/root/re-fs/install.sh).
 #
-# Listens on every address. Clients that reach it on the USB network (10.11.99.1)
-# or loopback (127.0.0.1: wireproxy's WireGuard tunnel ends there) are trusted.
-# Others (Wi-Fi) must first log in with an ed25519 key from
-# /home/root/.ssh/authorized_keys; the data itself is not encrypted.
+# Clients that reach it on the USB network (10.11.99.1) or loopback (127.0.0.1:
+# wireproxy's WireGuard tunnel ends there) are trusted. Others (Wi-Fi) must first
+# log in with an ed25519 key from /home/root/.ssh/authorized_keys; the data itself
+# is not encrypted.
 [Unit]
 Description=re-fs agent
+Requires=re-fsd.socket
 RequiresMountsFor=/home/root
 After=home.mount
 
 [Service]
-ExecStart=/home/root/re-fs/re-fsd --listen 0.0.0.0:7745 --allow-local 127.0.0.1 --allow-local 10.11.99.1 --ssh-auth
-Restart=always
+ExecStart=/home/root/re-fs/re-fsd --allow-local 127.0.0.1 --allow-local 10.11.99.1 --ssh-auth --idle-exit 300
+Restart=on-failure
 RestartSec=5
 Nice=10
-
-[Install]
-WantedBy=multi-user.target
