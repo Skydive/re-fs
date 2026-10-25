@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/re-proto", "crates/re-fsd", "crates/re-fs", "crates/re-render"]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 repository = "ssh://git@forge.example/user/re-fs.git"

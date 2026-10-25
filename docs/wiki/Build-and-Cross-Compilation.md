@@ -20,8 +20,8 @@ standard libraries for `armv7-unknown-linux-musleabihf`, `armv7-unknown-linux-gn
 
 The reMarkable 1 and 2 are 32-bit ARM (armv7); the Paper Pro and Paper Pro Move are
 64-bit ARM (aarch64). The CPU isn't chosen when re-fs is built. Every build makes an
-agent for both, and the client records both paths, `RE_FSD_ARMV7` and
-`RE_FSD_AARCH64`. `re-fs deploy` decides when it runs:
+agent for both, and the client carries both (`RE_FSD_ARMV7` and `RE_FSD_AARCH64`,
+embedded by `crates/re-fs/build.rs`). `re-fs deploy` decides when it runs:
 
 1. It runs `uname -m; tr -d '\0' < /proc/device-tree/model` over ssh (one extra
    handshake, about 0.3 s on USB) and prints e.g. `root@10.11.99.1 is a reMarkable 2.0 (armv7l)`.
@@ -66,7 +66,7 @@ builds them.
   with `-nostdinc -isystem <musl>/include -isystem <gcc>/include`. The objects link
   into the same static musl binary. The musl-targeted GCC isn't in the cache; the
   glibc-targeted one is, and only its compiler is used.
-- With TLS (rustls) the agent is 1.79 MB; the default OpenSSL agent is 788 KB.
+- With TLS (rustls) the agent is 2.38 MB; the default OpenSSL agent is 788 KB.
 - The Paper Pro agent (`re-fsd-aarch64`, target `aarch64-unknown-linux-musl`) is
   built by the same function in `tablet.nix`, with
   `pkgsCross.aarch64-multiplatform`'s GCC and musl headers. It is 2.56 MB and runs
@@ -81,41 +81,45 @@ flowchart LR
   l --> b["re-fsd<br/>static ELF, ARM EABI5"]
 ```
 
-`nix build .#re-fs` embeds the store path of `re-fsd-armv7` (`RE_FSD_ARMV7`), so
-`re-fs deploy` installs exactly the agent it was built with. The service files in
+`nix build .#re-fs` embeds the agents themselves (`RE_FSD_ARMV7`,
+`RE_FSD_AARCH64`), so `re-fs deploy` installs exactly the agent it was built with. The service files in
 `deploy/` are embedded with `include_str!`; the source filter keeps `deploy/` and
 `tests/data/` alongside Cargo sources.
 
-## Without Nix
+## Release files and other distributions
 
-`tools/build.sh [--prefix DIR]` builds the same static rustls agents (armv7 and aarch64) and the client
-on an ordinary distribution. It needs rustup, a host C compiler, clang, curl and make:
+There's one build of each agent, made by Nix in CI (`.github/workflows/build.yml`,
+on a GitHub x86_64 runner). Users of other distributions download it instead of
+cross-compiling:
 
-```sh
-sudo pacman -S --needed rustup base-devel clang curl fuse3 openssh          # Arch
-sudo apt-get install rustup build-essential clang curl fuse3 openssh-client # Debian 13 (Ubuntu: likely the same, untested)
+```
+nix build .#re-fs-static           # the client as a static x86_64 musl binary, agents built in
+nix build .#dist                   # that client as .tar.gz, .deb, .rpm, Arch package; the three agents; SHA256SUMS
 ```
 
-It does what `tablet.nix` does, using other tools:
+- **The agents are built into the client.** `crates/re-fs/build.rs` reads the files
+  that `RE_FSD_ARMV7` and `RE_FSD_AARCH64` name and embeds them with
+  `include_bytes!`. A copied `re-fs` therefore deploys without any agent files or
+  store paths. An unset variable embeds nothing, and `deploy` then needs `--binary`.
+  This costs about 3.3 MB of client size.
+- **The portable client is static.** `re-fs-static` targets
+  `x86_64-unknown-linux-musl`, like the rustls agents: ring's and zstd's C is
+  compiled by the cached GCC against `pkgs.musl.dev`'s headers, and rust-lld links it
+  self-contained. The build fails if the result has an `INTERP` header. The client
+  needs no C libraries at run time (fuser calls `fusermount3`), so there's nothing
+  to patchelf and no `nix bundle`.
+- **Packages come from nfpm.** `nix/dist.nix` describes one package (`/usr/bin/re-fs`,
+  licence, README, `/usr/share/re-fs/host/` with the USB auto-mount rule and script)
+  with per-format dependencies: `fuse3` plus `openssh-client` (deb), `openssh-clients`
+  (rpm) or `openssh` (Arch).
 
-| | Nix | `tools/build.sh` |
-|---|---|---|
-| Rust + musl std | fenix | `rustup target add armv7-unknown-linux-musleabihf aarch64-unknown-linux-musl` (minimal profile) |
-| musl headers | `musl.dev` of `pkgsCross.armv7l-hf-multiplatform` / `aarch64-multiplatform` | musl 1.2.5 source, `make ARCH=arm` / `ARCH=aarch64 install-headers` (no compiler), cached in `target/musl-headers/<arch>` |
-| C compiler for ring/zstd | nixpkgs' ARMv7 / AArch64 GCC | host `clang` (cc-rs passes `--target=<rust target>`) with `-nostdinc -isystem <musl>/include -isystem <clang resource dir>/include` |
-| Archiver | the cross binutils | `llvm-ar` if installed, else `ar` |
-| Linker | rust-lld, self-contained musl (`.cargo/config.toml`) | same |
-| `RE_FSD_ARMV7`, `RE_FSD_AARCH64` | the agents' store paths | `DIR/lib/re-fs/re-fsd-armv7`, `re-fsd-aarch64` with `--prefix`, otherwise under `target/` |
-
-`RE_FSD_ARMV7` and `RE_FSD_AARCH64` are paths read when `deploy` runs (the agents
-aren't embedded), so with `--prefix` the agents are installed first and the client is
-built pointing at them.
-
-Tested in a clean `debian:trixie` container, where it produces an x86-64 `re-fs`
-and static `re-fsd-armv7` (ARM EABI5) and `re-fsd-aarch64` agents. Arch is untested
-(same steps; clang 23). The OpenSSL agent isn't covered.
-It would need an ARMv7 OpenSSL and zstd to link against, and a glibc no newer than
-the tablet's 2.39, which rules out linking against Debian 13's 2.41 armhf libraries.
+CI runs `nix flake check` (tests, clippy, all agents, the static and Windows
+clients), then `nix build .#dist .#re-fs-windows`, and uploads the files. The cross
+builds need no ARM runners. nixpkgs' binary cache has the ARM GCCs, OpenSSL, zstd and
+glibc. fenix's toolchains, including the ARM and musl standard libraries, are
+prebuilt downloads from static.rust-lang.org. So only re-fs's crates compile.
+`nix-community/cache-nix-action` keeps the store in the GitHub Actions cache,
+keyed by the lock files and `nix/`.
 
 ## The OpenSSL agent (default)
 
@@ -142,7 +146,7 @@ NEEDED  libssl.so.3  libcrypto.so.3  libzstd.so.1  libgcc_s.so.1  libc.so.6
 highest symbol version: GLIBC_2.39   (the tablet has glibc 2.39, OpenSSL 3.5.6)
 ```
 
-It is 788 KB, against 1.79 MB for the static rustls build. It also links the
+It is 788 KB, against 2.38 MB for the static rustls build. It also links the
 tablet's `libzstd.so.1` (1.5.5) for zstd-compressed replies, built against nixpkgs'
 cached ARMv7 zstd; the rustls build compiles zstd in. Its C (OpenSSL headers) is
 compiled with the same cached ARMv7 GCC; there's no ring to cross-compile. The

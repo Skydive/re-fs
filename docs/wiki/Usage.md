@@ -6,9 +6,24 @@ works underneath, see [Architecture](Architecture) and [Transports and security]
 ## One-time setup
 
 ```sh
-nix build .#re-fs                               # the client; it embeds the matching agent
+nix build .#re-fs                               # the client, with the tablet agents built in
 ./result/bin/re-fs deploy root@10.11.99.1 --service
 ```
+
+Without Nix, install a package from the GitHub release (or a CI run's `re-fs`
+artifact), then run `re-fs deploy root@10.11.99.1 --service`:
+
+```sh
+sudo apt install ./re-fs_*_amd64.deb                # Debian, Ubuntu
+sudo dnf install ./re-fs-*.x86_64.rpm               # Fedora, openSUSE (zypper in)
+sudo pacman -U ./re-fs-*-x86_64.pkg.tar.zst         # Arch
+tar xzf re-fs-*-x86_64-linux.tar.gz                 # anything else: one static binary
+```
+
+`deploy` asks the tablet for its CPU over ssh and installs the agent built into
+re-fs for it. A reMarkable 1 or 2 gets the armv7 OpenSSL agent and a Paper Pro or
+Paper Pro Move the static aarch64 one. `--binary FILE` installs another one, e.g.
+`re-fsd-armv7-rustls`.
 
 `deploy --service`, over SSH (here via the USB cable, where the tablet is always
 `10.11.99.1`):
@@ -201,37 +216,6 @@ the NixOS module (`users`) or the install script (`/etc/tmpfiles.d`) creates the
 point, owned by you, at every boot. Any other directory you own works too
 (`mountPoint`, or `--mountpoint` for the script). A real gvfs backend would be a C
 plugin inside GVfs, which isn't worth it for a sidebar entry.
-
-### Without Nix
-
-Any systemd distribution works with the files in `deploy/host/`:
-
-```sh
-deploy/host/install-usb-automount.sh                            # /run/media/$USER/reMarkable
-deploy/host/install-usb-automount.sh --mountpoint ~/tablet -- --overwrite -v
-deploy/host/install-usb-automount.sh --uninstall
-```
-
-It needs `re-fs` and `fusermount3` on your PATH. It installs
-`/etc/udev/rules.d/70-re-fs-remarkable.rules` (the same rule as the NixOS module; it
-asks for sudo for this and the next step), reloads udev so an already-plugged-in tablet
-is picked up, installs `/etc/tmpfiles.d/re-fs-$USER.conf` to create the mount point
-under `/run/media` at boot, writes `~/.config/systemd/user/re-fs-usb.service` with the paths it found,
-and enables it. Everything after `--` is passed to `re-fs mount`. If your tablet
-reports a different USB id, edit the rule file before installing.
-
-### Checking
-
-Check it with `systemctl --user status re-fs-usb` and
-`journalctl --user -u re-fs-usb`. It needs the tablet service (`re-fs deploy
-root@10.11.99.1 --service`) once. Don't mount the same mountpoint by hand at the
-same time.
-
-**File manager sidebar:** file managers built on GIO (Nautilus and friends) list mounts
-under `/run/media/$USER/` as removable drives with an eject button. To get that, point
-`mountPoint` at e.g. `/run/media/you/reMarkable` (that directory must exist and belong
-to you). A real gvfs backend would be a C plugin inside GVfs, which isn't worth it for
-a sidebar entry.
 
 ## Without mounting
 

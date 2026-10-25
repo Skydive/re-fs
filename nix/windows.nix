@@ -1,8 +1,8 @@
 # The client for Windows (x86_64, MinGW): ls, push, pair and deploy; no mount yet
 # (that needs a WinFsp backend). Linked by nixpkgs' (cached) MinGW GCC, which also
 # compiles ring's and zstd's C. Further Windows outputs (an installer, a WinFsp
-# build) go here.
-{ pkgs, craneLib, src, targets }:
+# build) go here. Both tablet agents are built in, as on Linux.
+{ pkgs, craneLib, src, targets, agents }:
 let
   winPkgs = pkgs.pkgsCross.mingwW64;
   winCC = winPkgs.stdenv.cc;
@@ -23,5 +23,7 @@ in
 {
   re-fs-windows = craneLib.buildPackage (winCommon // {
     cargoArtifacts = craneLib.buildDepsOnly winCommon;
+    RE_FSD_ARMV7 = "${agents.armv7}/bin/re-fsd";
+    RE_FSD_AARCH64 = "${agents.aarch64}/bin/re-fsd";
   });
 }

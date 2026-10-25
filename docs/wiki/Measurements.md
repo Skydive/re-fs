@@ -67,7 +67,7 @@ Conclusions:
 | | Size |
 |---|---|
 | re-fsd, no TLS | 432–808 KB |
-| re-fsd with rustls + ring + rcgen (static musl) | 1.79 MB |
+| re-fsd with rustls + ring + rcgen (static musl) | 2.38 MB |
 | re-fsd with the tablet's OpenSSL (dynamic glibc) | 788 KB |
 | re-fs client | 2.7 MB |
 | saved index (`index.zstd`) | ~770 KB |

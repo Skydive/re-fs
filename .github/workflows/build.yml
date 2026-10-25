@@ -1,0 +1,57 @@
+# Builds everything with Nix on an x86_64 runner: the tablet agents are cross-built
+# (nixpkgs' binary cache has the ARM GCCs, OpenSSL and glibc; fenix's toolchains are
+# prebuilt downloads), so only re-fs's own crates compile here. The Nix store is
+# kept in the GitHub Actions cache between runs.
+#
+# Every run uploads the release files (`nix build .#dist`) as the "re-fs" artifact;
+# a v* tag also publishes them as a GitHub release.
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # for the release on tags
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+
+      # The store, keyed by the lock files: dependencies and toolchains come back
+      # from the cache, re-fs's crates rebuild.
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'nix/*.nix', 'flake.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 6G
+
+      # Tests (both TLS backends), clippy, all three agents, the static and
+      # Windows clients.
+      - run: nix flake check -L
+
+      - run: nix build .#dist .#re-fs-windows -L
+      - name: Collect the release files
+        run: |
+          mkdir dist
+          cp -L result/* dist/
+          cp -L result-1/bin/re-fs.exe dist/re-fs-windows-x86_64.exe
+          rm dist/SHA256SUMS
+          (cd dist && sha256sum * > SHA256SUMS)
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re-fs
+          path: dist/
+
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

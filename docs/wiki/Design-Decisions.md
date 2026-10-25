@@ -209,7 +209,7 @@ and the reason. "User" means the project owner's explicit call.
   features `openssl` and `rustls`; Nix `re-fsd-armv7` / `re-fsd-armv7-rustls`,
   `re-fs` / `re-fs-rustls-agent`, `lib.agentFor`) linking the tablet's own OpenSSL
   3.5.6 instead of rustls + ring. OpenSSL then became the default.
-- **Why:** binary size (788 KB vs 1.79 MB); the tablet already ships libssl and
+- **Why:** binary size (788 KB vs 2.38 MB); the tablet already ships libssl and
   libcrypto, used by xochitl. It also avoids compiling ring's C for that build,
   without zig (rejected earlier).
 - **How:** one buffer-oriented `tls::Session` with two implementations; OpenSSL runs

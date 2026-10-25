@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "re-fs"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1230,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "re-fsd"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "inotify",
@@ -1246,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "re-proto"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "lz4_flex",
  "postcard",
@@ -1259,7 +1259,7 @@ dependencies = [
 
 [[package]]
 name = "re-render"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "lopdf",
  "thiserror",

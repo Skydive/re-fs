@@ -28,7 +28,7 @@ flowchart LR
 | [Rendering](Rendering) | v5/v6 stroke parsing, notebooks, annotated PDFs, highlights |
 | [Writes and plans](Writes-and-Plans) | How filesystem actions become tablet edits |
 | [Caching and offline](Caching-and-Offline) | Downloads, generated files, the saved index |
-| [Build and cross-compilation](Build-and-Cross-Compilation) | Nix, crane, armv7 and aarch64 musl, ring, the optional OpenSSL backend, building without Nix |
+| [Build and cross-compilation](Build-and-Cross-Compilation) | Nix, crane, armv7 and aarch64 musl, ring, the optional OpenSSL backend, CI release files |
 | [Design decisions](Design-Decisions) | Every decision, the alternatives, and why |
 | [Measurements](Measurements) | Benchmarks taken on the real tablet |
 | [Testing](Testing) | What the tests cover and how to run them |

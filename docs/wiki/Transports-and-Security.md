@@ -108,7 +108,7 @@ at compile time:
 | Cargo feature | Library | Agent binary | Notes |
 |---|---|---|---|
 | `openssl` (default) | the tablet's own OpenSSL 3 (`/usr/lib/libssl.so.3`, `libcrypto.so.3`; 3.5.6, also used by xochitl and rm-sync) | 788 KB, dynamic glibc | the OpenSSL session runs over an in-memory pipe so the mio loop stays the same |
-| `rustls` | rustls + ring, statically linked | 1.79 MB, static musl | no run-time dependencies |
+| `rustls` | rustls + ring, statically linked | 2.38 MB, static musl | no run-time dependencies |
 
 Both are TLS 1.3 only, prefer ChaCha20-Poly1305, check client certificates against
 `authorized_keys` (OpenSSL through a verify callback), and use the same `tls.key`

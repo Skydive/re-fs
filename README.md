@@ -19,7 +19,8 @@ and `rm` into safe edits on the tablet.
 ## Quick start
 
 ```sh
-nix build .#re-fs                                   # client (embeds the matching agent)
+nix build .#re-fs                                   # client, with the tablet agents built in
+                                                    # no Nix: download a build, see below
 
 ./result/bin/re-fs deploy root@10.11.99.1 --service # once, over USB: agent, systemd
                                                     # socket, TLS key; pins the tablet key
@@ -160,7 +161,7 @@ backend, which isn't written yet.
 nix build .#re-fs                  # client; `deploy` installs the OpenSSL agent (rM1/2) or the aarch64 one
 nix build .#re-fs-rustls-agent     # client; `deploy` installs a static rustls agent on every model
 nix build .#re-fsd-armv7           # rM1/2 agent with the tablet's OpenSSL (default): 788 KB, dynamic glibc
-nix build .#re-fsd-armv7-rustls    # rM1/2 agent with rustls + ring: 1.79 MB, static musl
+nix build .#re-fsd-armv7-rustls    # rM1/2 agent with rustls + ring: 2.38 MB, static musl
 nix build .#re-fsd-aarch64         # Paper Pro agent with rustls + ring: 2.56 MB, static musl
 nix build .#re-fs-windows          # re-fs.exe for Windows (x86_64): ls, push, pair, deploy; no mount yet
 nix flake check                    # tests (both TLS backends), clippy, both agents, Windows client
@@ -176,23 +177,28 @@ The agent's TLS backend is a cargo feature: `openssl` (default; links the tablet
 --features rustls`). The rustls build cross-compiles ring's C with nixpkgs' cached
 ARMv7 GCC against musl headers and links everything with rust-lld.
 
-### Without Nix (Arch, Debian, …)
+### Without Nix: prebuilt packages
 
-`tools/build.sh` builds the client and the static rustls agents (armv7 and aarch64)
-with rustup and clang, and with `--prefix` installs them so `re-fs deploy` finds
-the agents:
+CI builds everything with Nix (`.github/workflows/build.yml`). Each run uploads a
+`re-fs` artifact, and each `v*` tag publishes the same files as a GitHub release:
+
+| File | What |
+|---|---|
+| `re-fs_*_amd64.deb`, `re-fs-*.x86_64.rpm`, `re-fs-*-x86_64.pkg.tar.zst` | the client for Debian/Ubuntu, Fedora/openSUSE, Arch; depend on fuse3 and ssh |
+| `re-fs-*-x86_64-linux.tar.gz` | the same client as one static binary, for any other distribution |
+| `re-fs-windows-x86_64.exe` | the Windows client |
+| `re-fsd-armv7`, `re-fsd-armv7-rustls`, `re-fsd-aarch64` | the agents on their own (for `deploy --binary`) |
 
 ```sh
-sudo pacman -S --needed rustup base-devel clang curl fuse3 openssh          # Arch
-sudo apt-get install rustup build-essential clang curl fuse3 openssh-client # Debian 13 (Ubuntu: likely the same, untested)
-
-tools/build.sh --prefix ~/.local        # ~/.local/bin/re-fs, ~/.local/lib/re-fs/re-fsd-{armv7,aarch64}
+sudo apt install ./re-fs_*_amd64.deb                # Debian, Ubuntu
+sudo dnf install ./re-fs-*.x86_64.rpm               # Fedora, openSUSE (zypper in)
+sudo pacman -U ./re-fs-*-x86_64.pkg.tar.zst         # Arch
+tar xzf re-fs-*-x86_64-linux.tar.gz                 # anything else: one static binary
 ```
 
-clang compiles the agents' C (ring, zstd) for each CPU against musl's headers. The
-script fetches the headers once from musl.libc.org into `target/musl-headers/`, and
-rust-lld links the agents. No ARM GCC or sysroot is needed. The OpenSSL agent stays
-Nix-only, because it needs an ARMv7 OpenSSL and a glibc no newer than the tablet's.
+The Linux client is a static x86_64 musl binary (`nix build .#re-fs-static`). It has
+no glibc or `/nix/store` dependency and carries both agents, so `re-fs deploy` works
+without the agent files. `nix build .#dist` makes all of the above locally.
 
 ## Measured on a reMarkable 2
 

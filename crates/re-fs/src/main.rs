@@ -185,7 +185,7 @@ enum Cmd {
     Deploy {
         /// ssh destination, e.g. root@tablet.vpn
         host: String,
-        /// The re-fsd binary (default: the one this re-fs was built with for the
+        /// The re-fsd binary (default: the one built into this re-fs for the
         /// tablet's CPU: armv7 for a reMarkable 1/2, aarch64 for a Paper Pro).
         #[arg(long)]
         binary: Option<PathBuf>,
@@ -424,12 +424,13 @@ impl Arch {
         }
     }
 
-    /// The agent this re-fs was built with for this CPU.
-    fn built_agent(self) -> Option<&'static str> {
-        match self {
-            Arch::Armv7 => option_env!("RE_FSD_ARMV7"),
-            Arch::Aarch64 => option_env!("RE_FSD_AARCH64"),
-        }
+    /// The agent built into this re-fs for this CPU (see build.rs).
+    fn built_agent(self) -> Option<&'static [u8]> {
+        let bytes: &'static [u8] = match self {
+            Arch::Armv7 => include_bytes!(concat!(env!("OUT_DIR"), "/re-fsd-armv7")),
+            Arch::Aarch64 => include_bytes!(concat!(env!("OUT_DIR"), "/re-fsd-aarch64")),
+        };
+        (!bytes.is_empty()).then_some(bytes)
     }
 }
 
@@ -458,18 +459,18 @@ fn deploy(host: &str, binary: Option<PathBuf>, service: bool) -> Result<()> {
         bail!("{host} ({model}) has a CPU re-fs has no agent for: {machine}");
     };
     eprintln!("re-fs: {host} is a {model} ({machine})");
-    let binary = match binary.or_else(|| arch.built_agent().map(PathBuf::from)) {
-        Some(b) => b,
-        None => bail!(
+    let (name, bytes) = match (&binary, arch.built_agent()) {
+        (Some(b), _) => (b.display().to_string(), std::fs::read(b).with_context(|| format!("reading {}", b.display()))?),
+        (None, Some(bytes)) => (format!("the built-in {} agent", arch.name()), bytes.to_vec()),
+        (None, None) => bail!(
             "this re-fs was built without an {0} agent; give --binary (e.g. $(nix build .#re-fsd-{0} --print-out-paths)/bin/re-fsd)",
             arch.name()
         ),
     };
-    let bytes = std::fs::read(&binary).with_context(|| format!("reading {}", binary.display()))?;
     match Arch::of_elf(&bytes) {
         Some(a) if a == arch => {}
-        Some(a) => bail!("{} is an {} agent, but {host} needs {}", binary.display(), a.name(), arch.name()),
-        None => bail!("{} isn't an ARM executable", binary.display()),
+        Some(a) => bail!("{name} is an {} agent, but {host} needs {}", a.name(), arch.name()),
+        None => bail!("{name} isn't an ARM executable"),
     }
     let mut script = format!(
         "set -e; mkdir -p {AGENT_DIR}; cat > {AGENT_DIR}/re-fsd.new; chmod 755 {AGENT_DIR}/re-fsd.new; \
@@ -497,7 +498,7 @@ fn deploy(host: &str, binary: Option<PathBuf>, service: bool) -> Result<()> {
     if !status.success() {
         bail!("deploy failed ({status})");
     }
-    eprintln!("re-fs: installed {} ({} bytes) as {host}:{DEFAULT_AGENT}", binary.display(), bytes.len());
+    eprintln!("re-fs: installed {name} ({} bytes) as {host}:{DEFAULT_AGENT}", bytes.len());
     Ok(())
 }
 

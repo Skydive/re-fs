@@ -1,9 +1,13 @@
-# Static musl agents (reMarkable 1/2 and Paper Pro), linked with the toolchain's
+# Static musl builds (the rustls agents, the portable client), linked with the toolchain's
 # own lld, so no cross C toolchain is needed for the link.
 [target.armv7-unknown-linux-musleabihf]
 linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]
 
 [target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]
+
+[target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
 rustflags = ["-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]

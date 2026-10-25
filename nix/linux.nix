@@ -19,8 +19,9 @@ let
     doCheck = false; # tests run once, in checks.tests
   } // extra);
 
-  # `re-fs deploy` installs the agent it was built with for the tablet's CPU:
-  # armv7 (reMarkable 1/2) with the given TLS backend, or aarch64 (Paper Pro).
+  # Both agents are built into the client (crates/re-fs/build.rs); `re-fs deploy`
+  # installs the one for the tablet's CPU: armv7 (reMarkable 1/2) with the given
+  # TLS backend, or aarch64 (Paper Pro).
   client = tls: member "re-fs" {
     RE_FSD_ARMV7 = "${agentFor tls}/bin/re-fsd";
     RE_FSD_AARCH64 = "${aarch64Agent}/bin/re-fsd";
