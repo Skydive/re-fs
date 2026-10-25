@@ -35,7 +35,7 @@
     in
     {
       # USB auto-mount: the NixOS module names the tablet's USB network device; the
-      # home-manager module mounts it while it's plugged in. See docs/wiki/Usage.md.
+      # home-manager module mounts it while it's plugged in. See docs/guide/auto-mount.md.
       nixosModules.default = import ./nix/nixos.nix;
       homeManagerModules.default = import ./nix/home-manager.nix self;
 

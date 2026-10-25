@@ -77,7 +77,7 @@ flowchart LR
 
 On the surveyed tablet every parent pointer was valid: no orphans, no cycles, no
 document used as a parent. re-fs still handles all three (see
-[Architecture](Architecture)).
+[Architecture](architecture.md)).
 
 ## `.content`
 
@@ -216,7 +216,7 @@ So a point (x_px, y_px) lands at `x_pt = page_w/2 + (x_px − 702)·72/226` and
 `y_pt = y_px·72/226` from the top. Two other models (page fitted to the screen's
 width; page fitted to the whole screen, centred) were tried and both put the ink
 visibly in the wrong place; the physical model matched xochitl's own thumbnails of a
-real annotated A4 page stroke for stroke. See [Rendering](Rendering).
+real annotated A4 page stroke for stroke. See [Rendering](rendering.md).
 
 ## The trash
 

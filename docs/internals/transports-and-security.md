@@ -1,5 +1,9 @@
 # Transports and security
 
+How the client reaches the agent, how the tablet service is set up, and who may
+connect. Choosing a transport as a user is covered in
+[Connecting](../guide/connecting.md).
+
 ## Transports
 
 | Flag | Path | Encryption | Notes |
@@ -114,4 +118,4 @@ Both are TLS 1.3 only, prefer ChaCha20-Poly1305, check client certificates again
 `authorized_keys` (OpenSSL through a verify callback), and use the same `tls.key`
 file format, so the pinned key survives switching backends. Measured over USB, TLS
 ran at 23 MiB/s with OpenSSL and 19 MiB/s with rustls. See
-[Build and cross-compilation](Build-and-Cross-Compilation).
+[Build and cross-compilation](../development/building.md).

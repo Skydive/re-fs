@@ -6,7 +6,7 @@
 ## The problem
 
 `X.annotated.pdf` is made by rewriting the whole original with lopdf
-([Rendering](Rendering)). The rewrite needs the complete original, so nothing can be
+([Rendering](../internals/rendering.md)). The rewrite needs the complete original, so nothing can be
 served until the whole PDF has been downloaded and rewritten:
 
 | Link | 16 MB annotated PDF, first byte |
@@ -15,7 +15,7 @@ served until the whole PDF has been downloaded and rewritten:
 | WireGuard (about 2 MiB/s) | 8 s or more before anything shows |
 
 Original PDFs don't have this problem: viewers read in pieces and re-fs serves pieces
-of a file that's still downloading ([Caching and offline](Caching-and-Offline)), so
+of a file that's still downloading ([Caching and offline](../internals/caching-and-offline.md)), so
 they open almost at once.
 
 ## The idea: a PDF incremental update
@@ -100,7 +100,7 @@ parser for dictionaries, and lopdf's writer for the tail's objects.
 ## Fallbacks
 
 Anything the incremental path can't handle goes to the current full rewrite, which
-already repairs broken PDFs ([Rendering](Rendering), decision D40):
+already repairs broken PDFs ([Rendering](../internals/rendering.md), decision D40):
 
 | Case | Cheap detection |
 |---|---|
@@ -132,7 +132,7 @@ little.
 Notebook PDFs are rendered from stroke files, which are small. Since `ReadPages`
 batching they're bandwidth-bound, not round-trip-bound: a 284-page notebook over
 WireGuard went from 165 s to 31 s, and after a one-page edit it's re-made in 4 s
-(only the changed page is fetched). See [Measurements](Measurements).
+(only the changed page is fetched). See [Measurements](../development/measurements.md).
 
 ## Effort and risks
 

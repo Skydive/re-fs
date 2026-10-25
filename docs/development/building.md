@@ -1,4 +1,7 @@
-# Build and cross-compilation
+# Building
+
+How the client and the tablet agents are built with Nix, for every tablet CPU and
+TLS backend. For the published release files see [Releases](releases.md).
 
 ```
 nix build .#re-fs                  # client; its `deploy` installs the OpenSSL agent (rM1/2) or the aarch64 one
@@ -9,7 +12,7 @@ nix build .#re-fsd-aarch64         # Paper Pro agent, OpenSSL backend (default):
 nix build .#re-fsd-aarch64-rustls  # Paper Pro agent, rustls backend: static aarch64 musl
 nix build .#re-fsd                 # agent for x86 (tests, local experiments)
 nix build .#re-fs-windows          # Windows client (x86_64 MinGW): ls, push, pair, deploy
-nix flake check                    # tests, tests-rustls, clippy -D warnings, all three tablet agents, Windows client
+nix flake check                    # tests, tests-rustls, clippy -D warnings, all four tablet agents, Windows client
 nix develop                  # cargo, rust-analyzer, python3
 ```
 
@@ -91,41 +94,6 @@ flowchart LR
 `deploy/` are embedded with `include_str!`; the source filter keeps `deploy/` and
 `tests/data/` alongside Cargo sources.
 
-## Release files and other distributions
-
-There's one build of each agent, made by Nix in CI (`.github/workflows/build.yml`,
-on a GitHub x86_64 runner). Users of other distributions download it instead of
-cross-compiling:
-
-```
-nix build .#re-fs-static           # the client as a static x86_64 musl binary, agents built in
-nix build .#dist                   # that client as .tar.gz, .deb, .rpm, Arch package; the three agents; SHA256SUMS
-```
-
-- **The agents are built into the client.** `crates/re-fs/build.rs` reads the files
-  that `RE_FSD_ARMV7` and `RE_FSD_AARCH64` name and embeds them with
-  `include_bytes!`. A copied `re-fs` therefore deploys without any agent files or
-  store paths. An unset variable embeds nothing, and `deploy` then needs `--binary`.
-  This costs about 3.3 MB of client size.
-- **The portable client is static.** `re-fs-static` targets
-  `x86_64-unknown-linux-musl`, like the rustls agents: ring's and zstd's C is
-  compiled by the cached GCC against `pkgs.musl.dev`'s headers, and rust-lld links it
-  self-contained. The build fails if the result has an `INTERP` header. The client
-  needs no C libraries at run time (fuser calls `fusermount3`), so there's nothing
-  to patchelf and no `nix bundle`.
-- **Packages come from nfpm.** `nix/dist.nix` describes one package (`/usr/bin/re-fs`,
-  licence, README, `/usr/share/re-fs/host/` with the USB auto-mount rule and script)
-  with per-format dependencies: `fuse3` plus `openssh-client` (deb), `openssh-clients`
-  (rpm) or `openssh` (Arch).
-
-CI runs `nix flake check` (tests, clippy, all agents, the static and Windows
-clients), then `nix build .#dist .#re-fs-windows`, and uploads the files. The cross
-builds need no ARM runners. nixpkgs' binary cache has the ARM GCCs, OpenSSL, zstd and
-glibc. fenix's toolchains, including the ARM and musl standard libraries, are
-prebuilt downloads from static.rust-lang.org. So only re-fs's crates compile.
-`nix-community/cache-nix-action` keeps the store in the GitHub Actions cache,
-keyed by the lock files and `nix/`.
-
 ## The OpenSSL agent (default)
 
 The tablet already ships OpenSSL 3.5.6 (`/usr/lib/libssl.so.3` 800 KB,
@@ -159,9 +127,5 @@ compiled with the same cached ARMv7 GCC; there's no ring to cross-compile. The
 trade-off: it depends on the tablet's glibc and OpenSSL staying compatible across OS
 updates, where the static rustls build depends on nothing.
 
-## Local development without the tablet
-
-`mirror/` (gitignored) holds a copy of the tablet's `.metadata`/`.content` files plus
-sparse files with each PDF/EPUB's real size and mtime (see the README). A native
-`re-fsd --dir <copy of mirror> --listen 127.0.0.1:7746` serves it, and
-`re-fs mount --tcp 127.0.0.1:7746` mounts it, writes included.
+Release builds and the CI pipeline are on [Releases](releases.md); working without
+a tablet is on [Without the tablet](without-the-tablet.md).

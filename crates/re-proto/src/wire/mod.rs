@@ -1,4 +1,4 @@
-//! The re-fs wire protocol. See docs/protocol.md.
+//! The re-fs wire protocol. See docs/internals/wire-protocol.md.
 //!
 //! Every frame is a 9-byte header followed by `len` payload bytes:
 //!

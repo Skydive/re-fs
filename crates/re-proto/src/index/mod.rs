@@ -1,5 +1,5 @@
 //! The tablet's flat xochitl directory and the folder tree rebuilt from it.
-//! See docs/format.md for the layout this models.
+//! See docs/reference/xochitl-format.md for the layout this models.
 
 mod entry;
 pub mod ino;

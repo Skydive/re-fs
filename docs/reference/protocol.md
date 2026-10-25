@@ -1,7 +1,8 @@
 # re-fs wire protocol (version 7)
 
-One byte stream per connection: TCP, or `ssh HOST re-fsd --stdio`. No encryption of
-its own; use WireGuard, USB or ssh for that.
+A one-page summary for working on the code; the full description is
+[Wire protocol](../internals/wire-protocol.md). One byte stream per connection: plain
+TCP, TLS 1.3, or `ssh HOST re-fsd --stdio`; the protocol inside is the same on all.
 
 ## Frames
 

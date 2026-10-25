@@ -1,5 +1,9 @@
 # Caching and offline
 
+What the client keeps on disk, how files are downloaded and generated, and how a
+mount works without the tablet. Everything lives under `--cache-dir` (default
+`~/.cache/re-fs`).
+
 ```
 ~/.cache/re-fs/objects/<uuid>.pdf@<mtime>        complete originals
 ~/.cache/re-fs/partial/<uuid>.pdf@<mtime>        downloads in progress

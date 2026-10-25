@@ -1,5 +1,8 @@
 # xochitl on-disk format (OS 3.x)
 
+A one-page summary for working on the code; the full description is
+[reMarkable storage format](../internals/storage-format.md).
+
 Measured on a reMarkable 2 (OS build 20260827113527) on 2026-10-23, read-only over SSH.
 
 ## Location

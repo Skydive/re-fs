@@ -279,7 +279,8 @@ and the reason. "User" means the project owner's explicit call.
 
 ### D43. The client embeds its agent
 - **Why:** `re-fs deploy` installs exactly the agent it was built with (protocol
-  versions match).
+  versions match). Since 0.1.0 the agents' bytes are built in (`crates/re-fs/build.rs`),
+  one per tablet CPU, so a packaged or copied client deploys without agent files.
 
 ## Parked
 
@@ -291,4 +292,4 @@ and the reason. "User" means the project owner's explicit call.
   streams, plus fallbacks to the full rewrite; a few days of work that mainly helps big
   PDFs over WireGuard (USB: 1–2 s for 16 MB already). Notebooks don't need it after
   ReadPages batching.
-- **Plan:** [Plan: incremental PDFs](Plan-Incremental-PDF).
+- **Plan:** [Plan: incremental PDFs](plan-incremental-pdf.md).

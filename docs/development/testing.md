@@ -1,7 +1,10 @@
 # Testing
 
+What the tests cover, how to run them, and what's checked by hand on a tablet.
+`nix flake check` runs everything CI runs.
+
 ```
-nix flake check                                   # tests, tests-rustls, clippy, all three tablet agents
+nix flake check                                   # tests, tests-rustls, clippy, all four tablet agents
 cargo test --workspace                            # unit and integration tests (OpenSSL agent)
 cargo test -p re-fsd --no-default-features --features rustls    # transport tests with rustls
 cargo test -p re-proto --features json --release -- --ignored --nocapture   # tree build speed on mirror/
@@ -42,8 +45,8 @@ both gave 172 paths without notebooks and 349 with them, identical.
 
 ## Manual checks on the tablet
 
-Done during development, with results recorded in [Measurements](Measurements) and
-[Rendering](Rendering):
+Done during development, with results recorded in [Measurements](measurements.md) and
+[Rendering](../internals/rendering.md):
 
 - every transport, with checksums against the tablet's files;
 - refusals: plain TCP from Wi-Fi, unknown client key, wrong tablet pin;

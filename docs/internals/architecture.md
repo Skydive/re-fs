@@ -32,9 +32,9 @@ flowchart TB
 - `index::tree`: the immutable tree, views, inodes, and `diff` for kernel
   invalidations.
 - `index::plan`: filesystem actions → tablet writes (see
-  [Writes and plans](Writes-and-Plans)).
+  [Writes and plans](writes-and-plans.md)).
 - `wire`: frames, messages, the sans-io `FrameDecoder` (see
-  [Wire protocol](Wire-Protocol)).
+  [Wire protocol](wire-protocol.md)).
 - `tlsid`: Ed25519 keys inside self-signed certificates, PKCS#8 encoding, hex.
 
 ### The tree
@@ -137,4 +137,4 @@ stateDiagram-v2
 ```
 
 If the first connection fails and a saved index exists, the mount comes up offline
-from it (see [Caching and offline](Caching-and-Offline)).
+from it (see [Caching and offline](caching-and-offline.md)).

@@ -100,7 +100,7 @@ impl Remote {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Mount the tablet's documents (read-only).
+    /// Mount the tablet's documents (writable unless --ro).
     Mount {
         mountpoint: PathBuf,
         #[command(flatten)]
