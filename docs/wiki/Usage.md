@@ -21,9 +21,9 @@ tar xzf re-fs-*-x86_64-linux.tar.gz                 # anything else: one static 
 ```
 
 `deploy` asks the tablet for its CPU over ssh and installs the agent built into
-re-fs for it. A reMarkable 1 or 2 gets the armv7 OpenSSL agent and a Paper Pro or
-Paper Pro Move the static aarch64 one. `--binary FILE` installs another one, e.g.
-`re-fsd-armv7-rustls`.
+re-fs for it. A reMarkable 1 or 2 gets the armv7 agent, and a Paper Pro or Paper Pro
+Move the aarch64 one. Both use the tablet's OpenSSL. `--binary FILE` installs another
+one, e.g. the static `re-fsd-armv7-rustls` or `re-fsd-aarch64-rustls` from the release.
 
 `deploy --service`, over SSH (here via the USB cable, where the tablet is always
 `10.11.99.1`):

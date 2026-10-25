@@ -23,7 +23,7 @@ in
 {
   re-fs-windows = craneLib.buildPackage (winCommon // {
     cargoArtifacts = craneLib.buildDepsOnly winCommon;
-    RE_FSD_ARMV7 = "${agents.armv7}/bin/re-fsd";
-    RE_FSD_AARCH64 = "${agents.aarch64}/bin/re-fsd";
+    RE_FSD_ARMV7 = "${agents.armv7.openssl}/bin/re-fsd";
+    RE_FSD_AARCH64 = "${agents.aarch64.openssl}/bin/re-fsd";
   });
 }

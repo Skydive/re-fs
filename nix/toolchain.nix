@@ -7,8 +7,10 @@ let
     armMusl = "armv7-unknown-linux-musleabihf";
     # The tablet agent with OpenSSL: links the tablet's own glibc and libssl.so.3.
     armGnu = "armv7-unknown-linux-gnueabihf";
-    # The Paper Pro / Paper Pro Move agent: static musl, rustls.
+    # The Paper Pro / Paper Pro Move agent with rustls: static musl.
     aarch64Musl = "aarch64-unknown-linux-musl";
+    # The Paper Pro / Paper Pro Move agent with OpenSSL: the tablet's glibc and libssl.so.3.
+    aarch64Gnu = "aarch64-unknown-linux-gnu";
     # The portable Linux client (static musl): runs on any distribution.
     linuxMusl = "x86_64-unknown-linux-musl";
     # The Windows client (MinGW).
@@ -25,6 +27,7 @@ let
     f.targets.${targets.armMusl}.stable.rust-std
     f.targets.${targets.armGnu}.stable.rust-std
     f.targets.${targets.aarch64Musl}.stable.rust-std
+    f.targets.${targets.aarch64Gnu}.stable.rust-std
     f.targets.${targets.linuxMusl}.stable.rust-std
     f.targets.${targets.windows}.stable.rust-std
   ];

@@ -3,14 +3,15 @@
 # prebuilt downloads), so only re-fs's own crates compile here. The Nix store is
 # kept in the GitHub Actions cache between runs.
 #
-# Every run uploads the release files (`nix build .#dist`) as the "re-fs" artifact;
-# a v* tag also publishes them as a GitHub release.
+# Every run uploads the release files (`nix build .#dist`) as the "re-fs" artifact.
+# A tag v<version> or release/<version> also publishes them as a GitHub release;
+# <version> must be Cargo.toml's workspace version (the flake reads it from there).
 name: build
 
 on:
   push:
     branches: [master]
-    tags: ["v*"]
+    tags: ["v*", "release/*"]
   pull_request:
   workflow_dispatch:
 
@@ -23,6 +24,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: cachix/install-nix-action@v31
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag=${GITHUB_REF_NAME#release/}; tag=${tag#v}
+          version=$(nix eval --raw .#lib.x86_64-linux.version)
+          [ "$tag" = "$version" ] || { echo "tag $GITHUB_REF_NAME, but Cargo.toml says $version"; exit 1; }
 
       # The store, keyed by the lock files: dependencies and toolchains come back
       # from the cache, re-fs's crates rebuild.
@@ -51,7 +59,8 @@ jobs:
           name: re-fs
           path: dist/
 
-      - if: startsWith(github.ref, 'refs/tags/v')
+      - if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          name: re-fs ${{ github.ref_name }}
           files: dist/*

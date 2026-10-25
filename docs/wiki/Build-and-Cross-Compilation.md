@@ -5,7 +5,8 @@ nix build .#re-fs                  # client; its `deploy` installs the OpenSSL a
 nix build .#re-fs-rustls-agent     # the same client, deploying a static rustls agent on every model
 nix build .#re-fsd-armv7           # rM1/2 agent, OpenSSL backend (default): dynamic armv7 glibc
 nix build .#re-fsd-armv7-rustls    # rM1/2 agent, rustls backend: static armv7 musl
-nix build .#re-fsd-aarch64         # Paper Pro agent, rustls backend: static aarch64 musl
+nix build .#re-fsd-aarch64         # Paper Pro agent, OpenSSL backend (default): dynamic aarch64 glibc
+nix build .#re-fsd-aarch64-rustls  # Paper Pro agent, rustls backend: static aarch64 musl
 nix build .#re-fsd                 # agent for x86 (tests, local experiments)
 nix build .#re-fs-windows          # Windows client (x86_64 MinGW): ls, push, pair, deploy
 nix flake check                    # tests, tests-rustls, clippy -D warnings, all three tablet agents, Windows client
@@ -33,8 +34,9 @@ embedded by `crates/re-fs/build.rs`). `re-fs deploy` decides when it runs:
 
 `uname -m` and not the model name decides, because the model strings of the newer
 tablets aren't verified here, while `uname -m` is the same on any Linux. The Paper
-Pro gets the static rustls agent: nothing has checked its OS's glibc and OpenSSL, and
-the static build doesn't depend on them.
+Pro gets the OpenSSL agent too, built the same way. It needs glibc 2.39 or newer,
+OpenSSL 3 and libzstd on the tablet, which hasn't been checked on a Paper Pro. If it
+won't start there, `deploy --binary re-fsd-aarch64-rustls` installs the static one.
 
 ## Layout
 
@@ -45,12 +47,12 @@ platform:
 |---|---|
 | `nix/toolchain.nix` | the fenix toolchain with the cross targets, crane, and the filtered source tree |
 | `nix/linux.nix` | x86_64 Linux: `re-fs`, `re-fs-rustls-agent`, the native `re-fsd`, the `tests`/`tests-rustls`/`clippy` checks, the dev shell |
-| `nix/tablet.nix` | the tablet agents: `re-fsd-armv7` (OpenSSL, default), `re-fsd-armv7-rustls` (static), `re-fsd-aarch64` (static, Paper Pro), and `agentFor` |
+| `nix/tablet.nix` | the tablet agents: `re-fsd-armv7` (OpenSSL, default), `re-fsd-armv7-rustls` (static), `re-fsd-aarch64` (OpenSSL, Paper Pro), `re-fsd-aarch64-rustls` (static), `agents.<cpu>.<tls>` and `agentFor` |
 | `nix/windows.nix` | the Windows client, `re-fs-windows` |
 | `nix/nixos.nix`, `nix/home-manager.nix` | the USB auto-mount modules (`nixosModules.default`, `homeManagerModules.default`) |
 
-`linux.nix` takes `agentFor` from `tablet.nix`, because the client embeds the agent
-it deploys. The tablet and Windows builds are also checks, so `nix flake check`
+`linux.nix`, `windows.nix` and `dist.nix` take `agents` from `tablet.nix`, because
+every client embeds the agents it deploys. The tablet and Windows builds are also checks, so `nix flake check`
 builds them.
 
 ## The static (rustls) agent
@@ -67,10 +69,13 @@ builds them.
   into the same static musl binary. The musl-targeted GCC isn't in the cache; the
   glibc-targeted one is, and only its compiler is used.
 - With TLS (rustls) the agent is 2.38 MB; the default OpenSSL agent is 788 KB.
-- The Paper Pro agent (`re-fsd-aarch64`, target `aarch64-unknown-linux-musl`) is
-  built by the same function in `tablet.nix`, with
+- The Paper Pro's static agent (`re-fsd-aarch64-rustls`, target
+  `aarch64-unknown-linux-musl`) is built by the same function in `tablet.nix`, with
   `pkgsCross.aarch64-multiplatform`'s GCC and musl headers. It is 2.56 MB and runs
-  under `qemu-aarch64` (`re-fsd 0.1.0`). It hasn't been tried on a Paper Pro.
+  under `qemu-aarch64`. The Paper Pro's default agent, `re-fsd-aarch64`, is the
+  OpenSSL build (789 KB; `aarch64-unknown-linux-gnu`, loader
+  `/lib/ld-linux-aarch64.so.1`), made by the same function as the armv7 one. Neither
+  has been tried on a Paper Pro.
 
 ```mermaid
 flowchart LR
@@ -133,8 +138,9 @@ cargo build -p re-fsd                                       # OpenSSL (default f
 cargo build -p re-fsd --no-default-features --features rustls
 ```
 
-`lib.x86_64-linux.agentFor "openssl" | "rustls"` gives either agent derivation to
-other flakes.
+For other flakes, `lib.x86_64-linux.agents.<armv7|aarch64>.<openssl|rustls>` gives
+any agent derivation, `agentFor "openssl" | "rustls"` the reMarkable 1/2 one, and
+`version` the version from `Cargo.toml`.
 
 The OpenSSL agent is a dynamic **armv7 glibc** binary built against nixpkgs'
 (cached) ARMv7 OpenSSL 3.5.9 and glibc, with the interpreter set to

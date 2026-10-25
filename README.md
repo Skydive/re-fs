@@ -46,11 +46,13 @@ until it drops: `--usb` (only while the cable is in), each `--tls ADDR`, each
 |---|---|---|---|
 | reMarkable 1 | armv7 (Cortex-A9) | `re-fsd-armv7` (OpenSSL) | untested |
 | reMarkable 2 | armv7 (Cortex-A7) | `re-fsd-armv7` (OpenSSL) | in daily use |
-| Paper Pro, Paper Pro Move | aarch64 (Cortex-A53/A55) | `re-fsd-aarch64` (rustls, static) | builds and runs under qemu; not tried on a device |
+| Paper Pro, Paper Pro Move | aarch64 (Cortex-A53/A55) | `re-fsd-aarch64` (OpenSSL) | builds; not tried on a device |
 
 The Paper Pro gives root over SSH only in developer mode, and turning that on wipes
-the tablet. Its agent is the static rustls build, so it doesn't depend on that OS's
-glibc or OpenSSL.
+the tablet. Its OpenSSL agent needs glibc 2.39 or newer, OpenSSL 3 and libzstd on the
+tablet, as on the reMarkable 2. That hasn't been checked on a Paper Pro. If it doesn't
+start, `re-fs deploy --binary re-fsd-aarch64-rustls` installs the static one, which
+needs nothing.
 
 ### Auto-mount on USB
 
@@ -158,11 +160,12 @@ self-contained `.exe`). Everything except `mount` works there; mounting needs a 
 backend, which isn't written yet.
 
 ```sh
-nix build .#re-fs                  # client; `deploy` installs the OpenSSL agent (rM1/2) or the aarch64 one
-nix build .#re-fs-rustls-agent     # client; `deploy` installs a static rustls agent on every model
+nix build .#re-fs                  # client; `deploy` installs the OpenSSL agent for the tablet's CPU
+nix build .#re-fs-rustls-agent     # client; `deploy` installs a static rustls agent instead
 nix build .#re-fsd-armv7           # rM1/2 agent with the tablet's OpenSSL (default): 788 KB, dynamic glibc
 nix build .#re-fsd-armv7-rustls    # rM1/2 agent with rustls + ring: 2.38 MB, static musl
-nix build .#re-fsd-aarch64         # Paper Pro agent with rustls + ring: 2.56 MB, static musl
+nix build .#re-fsd-aarch64         # Paper Pro agent with the tablet's OpenSSL (default): 789 KB, dynamic glibc
+nix build .#re-fsd-aarch64-rustls  # Paper Pro agent with rustls + ring: 2.56 MB, static musl
 nix build .#re-fs-windows          # re-fs.exe for Windows (x86_64): ls, push, pair, deploy; no mount yet
 nix flake check                    # tests (both TLS backends), clippy, both agents, Windows client
 nix develop                        # cargo, rust-analyzer
@@ -187,7 +190,7 @@ CI builds everything with Nix (`.github/workflows/build.yml`). Each run uploads 
 | `re-fs_*_amd64.deb`, `re-fs-*.x86_64.rpm`, `re-fs-*-x86_64.pkg.tar.zst` | the client for Debian/Ubuntu, Fedora/openSUSE, Arch; depend on fuse3 and ssh |
 | `re-fs-*-x86_64-linux.tar.gz` | the same client as one static binary, for any other distribution |
 | `re-fs-windows-x86_64.exe` | the Windows client |
-| `re-fsd-armv7`, `re-fsd-armv7-rustls`, `re-fsd-aarch64` | the agents on their own (for `deploy --binary`) |
+| `re-fsd-armv7`, `re-fsd-aarch64` (OpenSSL), `re-fsd-armv7-rustls`, `re-fsd-aarch64-rustls` | the agents on their own (for `deploy --binary`) |
 
 ```sh
 sudo apt install ./re-fs_*_amd64.deb                # Debian, Ubuntu

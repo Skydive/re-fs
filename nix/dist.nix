@@ -1,10 +1,9 @@
 # What a release ships for other distributions: the client as one static x86_64
 # musl binary (no glibc or Nix store paths, so it runs on Debian, Arch, Fedora, …)
-# with both tablet agents built in, the agents on their own, and the client
+# with both (OpenSSL) tablet agents built in, all four agents on their own, and the client
 # packaged by nfpm as .tar.gz, .deb, .rpm and an Arch package.
-{ pkgs, craneLib, src, targets, agents }:
+{ pkgs, craneLib, src, targets, agents, version }:
 let
-  version = (craneLib.crateNameFromCargoToml { cargoToml = ../Cargo.toml; }).version;
 
   # ring's and zstd's C are compiled by the (cached) glibc GCC against musl's
   # headers, as for the rustls agents; rust-lld links (.cargo/config.toml).
@@ -22,8 +21,8 @@ let
   };
   re-fs-static = craneLib.buildPackage (staticCommon // {
     cargoArtifacts = craneLib.buildDepsOnly staticCommon;
-    RE_FSD_ARMV7 = "${agents.armv7}/bin/re-fsd";
-    RE_FSD_AARCH64 = "${agents.aarch64}/bin/re-fsd";
+    RE_FSD_ARMV7 = "${agents.armv7.openssl}/bin/re-fsd";
+    RE_FSD_AARCH64 = "${agents.aarch64.openssl}/bin/re-fsd";
     # Fail the build if anything links dynamically.
     postInstall = ''
       if ${pkgs.binutils}/bin/readelf -l $out/bin/re-fs | grep -q INTERP; then
@@ -70,9 +69,10 @@ let
     cp ${../deploy/host/70-re-fs-remarkable.rules} ${../deploy/host/install-usb-automount.sh} $t/host/
     chmod -R u+w $t
     tar --sort=name --mtime=@$SOURCE_DATE_EPOCH --owner=0 --group=0 -czf $out/$t.tar.gz $t
-    install -m 755 ${agents.armv7}/bin/re-fsd $out/re-fsd-armv7
-    install -m 755 ${agents.armv7-rustls}/bin/re-fsd $out/re-fsd-armv7-rustls
-    install -m 755 ${agents.aarch64}/bin/re-fsd $out/re-fsd-aarch64
+    install -m 755 ${agents.armv7.openssl}/bin/re-fsd $out/re-fsd-armv7
+    install -m 755 ${agents.armv7.rustls}/bin/re-fsd $out/re-fsd-armv7-rustls
+    install -m 755 ${agents.aarch64.openssl}/bin/re-fsd $out/re-fsd-aarch64
+    install -m 755 ${agents.aarch64.rustls}/bin/re-fsd $out/re-fsd-aarch64-rustls
     (cd $out && sha256sum * > SHA256SUMS)
   '';
 in
