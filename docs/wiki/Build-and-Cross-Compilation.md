@@ -1,19 +1,40 @@
 # Build and cross-compilation
 
 ```
-nix build .#re-fs                  # client; its `deploy` installs the OpenSSL agent
-nix build .#re-fs-rustls-agent     # the same client, deploying the static rustls agent
-nix build .#re-fsd-armv7           # tablet agent, OpenSSL backend (default): dynamic armv7 glibc
-nix build .#re-fsd-armv7-rustls    # tablet agent, rustls backend: static armv7 musl
+nix build .#re-fs                  # client; its `deploy` installs the OpenSSL agent (rM1/2) or the aarch64 one
+nix build .#re-fs-rustls-agent     # the same client, deploying a static rustls agent on every model
+nix build .#re-fsd-armv7           # rM1/2 agent, OpenSSL backend (default): dynamic armv7 glibc
+nix build .#re-fsd-armv7-rustls    # rM1/2 agent, rustls backend: static armv7 musl
+nix build .#re-fsd-aarch64         # Paper Pro agent, rustls backend: static aarch64 musl
 nix build .#re-fsd                 # agent for x86 (tests, local experiments)
 nix build .#re-fs-windows          # Windows client (x86_64 MinGW): ls, push, pair, deploy
-nix flake check                    # tests, tests-rustls, clippy -D warnings, both armv7 agents, Windows client
+nix flake check                    # tests, tests-rustls, clippy -D warnings, all three tablet agents, Windows client
 nix develop                  # cargo, rust-analyzer, python3
 ```
 
 The flake uses **crane** with a **fenix** stable toolchain that includes the
-standard libraries for `armv7-unknown-linux-musleabihf`, `armv7-unknown-linux-gnueabihf`
-and `x86_64-pc-windows-gnu`.
+standard libraries for `armv7-unknown-linux-musleabihf`, `armv7-unknown-linux-gnueabihf`,
+`aarch64-unknown-linux-musl` and `x86_64-pc-windows-gnu`.
+
+## Tablet models: one client, an agent per CPU
+
+The reMarkable 1 and 2 are 32-bit ARM (armv7); the Paper Pro and Paper Pro Move are
+64-bit ARM (aarch64). The CPU isn't chosen when re-fs is built. Every build makes an
+agent for both, and the client records both paths, `RE_FSD_ARMV7` and
+`RE_FSD_AARCH64`. `re-fs deploy` decides when it runs:
+
+1. It runs `uname -m; tr -d '\0' < /proc/device-tree/model` over ssh (one extra
+   handshake, about 0.3 s on USB) and prints e.g. `root@10.11.99.1 is a reMarkable 2.0 (armv7l)`.
+2. `armv7*` picks the armv7 agent and `aarch64` the aarch64 one. Anything else is
+   refused.
+3. Before sending, it reads the chosen binary's ELF header (`e_machine` 40 = ARM,
+   183 = AArch64) and refuses one built for a different CPU. This also covers a
+   `--binary` given by hand.
+
+`uname -m` and not the model name decides, because the model strings of the newer
+tablets aren't verified here, while `uname -m` is the same on any Linux. The Paper
+Pro gets the static rustls agent: nothing has checked its OS's glibc and OpenSSL, and
+the static build doesn't depend on them.
 
 ## Layout
 
@@ -24,7 +45,7 @@ platform:
 |---|---|
 | `nix/toolchain.nix` | the fenix toolchain with the cross targets, crane, and the filtered source tree |
 | `nix/linux.nix` | x86_64 Linux: `re-fs`, `re-fs-rustls-agent`, the native `re-fsd`, the `tests`/`tests-rustls`/`clippy` checks, the dev shell |
-| `nix/tablet.nix` | the reMarkable agent: `re-fsd-armv7` (OpenSSL, default), `re-fsd-armv7-rustls` (static), and `agentFor` |
+| `nix/tablet.nix` | the tablet agents: `re-fsd-armv7` (OpenSSL, default), `re-fsd-armv7-rustls` (static), `re-fsd-aarch64` (static, Paper Pro), and `agentFor` |
 | `nix/windows.nix` | the Windows client, `re-fs-windows` |
 | `nix/nixos.nix`, `nix/home-manager.nix` | the USB auto-mount modules (`nixosModules.default`, `homeManagerModules.default`) |
 
@@ -46,6 +67,10 @@ builds them.
   into the same static musl binary. The musl-targeted GCC isn't in the cache; the
   glibc-targeted one is, and only its compiler is used.
 - With TLS (rustls) the agent is 1.79 MB; the default OpenSSL agent is 788 KB.
+- The Paper Pro agent (`re-fsd-aarch64`, target `aarch64-unknown-linux-musl`) is
+  built by the same function in `tablet.nix`, with
+  `pkgsCross.aarch64-multiplatform`'s GCC and musl headers. It is 2.56 MB and runs
+  under `qemu-aarch64` (`re-fsd 0.1.0`). It hasn't been tried on a Paper Pro.
 
 ```mermaid
 flowchart LR
@@ -60,6 +85,37 @@ flowchart LR
 `re-fs deploy` installs exactly the agent it was built with. The service files in
 `deploy/` are embedded with `include_str!`; the source filter keeps `deploy/` and
 `tests/data/` alongside Cargo sources.
+
+## Without Nix
+
+`tools/build.sh [--prefix DIR]` builds the same static rustls agents (armv7 and aarch64) and the client
+on an ordinary distribution. It needs rustup, a host C compiler, clang, curl and make:
+
+```sh
+sudo pacman -S --needed rustup base-devel clang curl fuse3 openssh          # Arch
+sudo apt-get install rustup build-essential clang curl fuse3 openssh-client # Debian 13 (Ubuntu: likely the same, untested)
+```
+
+It does what `tablet.nix` does, using other tools:
+
+| | Nix | `tools/build.sh` |
+|---|---|---|
+| Rust + musl std | fenix | `rustup target add armv7-unknown-linux-musleabihf aarch64-unknown-linux-musl` (minimal profile) |
+| musl headers | `musl.dev` of `pkgsCross.armv7l-hf-multiplatform` / `aarch64-multiplatform` | musl 1.2.5 source, `make ARCH=arm` / `ARCH=aarch64 install-headers` (no compiler), cached in `target/musl-headers/<arch>` |
+| C compiler for ring/zstd | nixpkgs' ARMv7 / AArch64 GCC | host `clang` (cc-rs passes `--target=<rust target>`) with `-nostdinc -isystem <musl>/include -isystem <clang resource dir>/include` |
+| Archiver | the cross binutils | `llvm-ar` if installed, else `ar` |
+| Linker | rust-lld, self-contained musl (`.cargo/config.toml`) | same |
+| `RE_FSD_ARMV7`, `RE_FSD_AARCH64` | the agents' store paths | `DIR/lib/re-fs/re-fsd-armv7`, `re-fsd-aarch64` with `--prefix`, otherwise under `target/` |
+
+`RE_FSD_ARMV7` and `RE_FSD_AARCH64` are paths read when `deploy` runs (the agents
+aren't embedded), so with `--prefix` the agents are installed first and the client is
+built pointing at them.
+
+Tested in a clean `debian:trixie` container, where it produces an x86-64 `re-fs`
+and static `re-fsd-armv7` (ARM EABI5) and `re-fsd-aarch64` agents. Arch is untested
+(same steps; clang 23). The OpenSSL agent isn't covered.
+It would need an ARMv7 OpenSSL and zstd to link against, and a glibc no newer than
+the tablet's 2.39, which rules out linking against Debian 13's 2.41 armhf libraries.
 
 ## The OpenSSL agent (default)
 

@@ -7,6 +7,8 @@ let
     armMusl = "armv7-unknown-linux-musleabihf";
     # The tablet agent with OpenSSL: links the tablet's own glibc and libssl.so.3.
     armGnu = "armv7-unknown-linux-gnueabihf";
+    # The Paper Pro / Paper Pro Move agent: static musl, rustls.
+    aarch64Musl = "aarch64-unknown-linux-musl";
     # The Windows client (MinGW).
     windows = "x86_64-pc-windows-gnu";
   };
@@ -20,6 +22,7 @@ let
     f.stable.rust-src
     f.targets.${targets.armMusl}.stable.rust-std
     f.targets.${targets.armGnu}.stable.rust-std
+    f.targets.${targets.aarch64Musl}.stable.rust-std
     f.targets.${targets.windows}.stable.rust-std
   ];
   craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;

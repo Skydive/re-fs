@@ -22,7 +22,7 @@ The tablet's DHCP hands out a /27.
 `re-fs deploy root@10.11.99.1 --service` installs:
 
 ```
-/home/root/re-fs/re-fsd            the agent (armv7; uses the tablet's OpenSSL by default)
+/home/root/re-fs/re-fsd            the agent (armv7 with the tablet's OpenSSL on a reMarkable 1/2; static aarch64 on a Paper Pro)
 /home/root/re-fs/re-fsd.socket     systemd socket, port 7745
 /home/root/re-fs/re-fsd.service    started by the socket
 /home/root/re-fs/install.sh        copies both units into /etc/systemd/system

@@ -1,31 +1,48 @@
-# The reMarkable 2 agent (re-fsd), cross-built for ARMv7 in two flavours.
-# Both use nixpkgs' (cached) ARMv7 GCC for the C parts.
+# The tablet agent (re-fsd), cross-built per CPU:
+#   armv7    reMarkable 1 and 2: OpenSSL (default, the tablet's libssl) or rustls (static)
+#   aarch64  Paper Pro and Paper Pro Move: rustls (static) only, since nothing here
+#            depends on that OS's glibc or OpenSSL
+# All use nixpkgs' (cached) cross GCCs for the C parts.
 { pkgs, craneLib, src, targets }:
 let
   armPkgs = pkgs.pkgsCross.armv7l-hf-multiplatform;
   armCC = armPkgs.stdenv.cc;
   armPrefix = armCC.targetPrefix;
 
-  # The rustls backend (optional): static musl, linked by rust-lld
-  # (.cargo/config.toml). ring's and zstd's C are compiled against musl's headers;
+  # The rustls backend: static musl, linked by rust-lld (.cargo/config.toml).
+  # ring's and zstd's C are compiled by the glibc cross GCC against musl's headers;
   # the result is fully static.
-  rustlsCommon = {
-    inherit src;
-    strictDeps = true;
+  rustlsAgent = { pname, target, crossPkgs }:
+    let
+      cc = crossPkgs.stdenv.cc;
+      prefix = cc.targetPrefix;
+      t = builtins.replaceStrings [ "-" ] [ "_" ] target;
+      common = {
+        inherit src pname;
+        strictDeps = true;
+        cargoExtraArgs = "-p re-fsd --no-default-features --features rustls";
+        CARGO_BUILD_TARGET = target;
+        doCheck = false;
+        nativeBuildInputs = [ cc ];
+        "CC_${t}" = "${prefix}cc";
+        "AR_${t}" = "${prefix}ar";
+        preBuild = ''
+          export CFLAGS_${t}="-nostdinc -isystem ${crossPkgs.musl.dev}/include -isystem $(${prefix}cc -print-file-name=include)"
+        '';
+      };
+    in
+    craneLib.buildPackage (common // { cargoArtifacts = craneLib.buildDepsOnly common; });
+
+  re-fsd-armv7-rustls = rustlsAgent {
     pname = "re-fsd-rustls";
-    cargoExtraArgs = "-p re-fsd --no-default-features --features rustls";
-    CARGO_BUILD_TARGET = targets.armMusl;
-    doCheck = false;
-    nativeBuildInputs = [ armCC ];
-    "CC_armv7_unknown_linux_musleabihf" = "${armPrefix}cc";
-    "AR_armv7_unknown_linux_musleabihf" = "${armPrefix}ar";
-    preBuild = ''
-      export CFLAGS_armv7_unknown_linux_musleabihf="-nostdinc -isystem ${armPkgs.musl.dev}/include -isystem $(${armPrefix}cc -print-file-name=include)"
-    '';
+    target = targets.armMusl;
+    crossPkgs = armPkgs;
   };
-  re-fsd-armv7-rustls = craneLib.buildPackage (rustlsCommon // {
-    cargoArtifacts = craneLib.buildDepsOnly rustlsCommon;
-  });
+  re-fsd-aarch64 = rustlsAgent {
+    pname = "re-fsd-aarch64";
+    target = targets.aarch64Musl;
+    crossPkgs = pkgs.pkgsCross.aarch64-multiplatform;
+  };
 
   # The OpenSSL backend (the default): a dynamic glibc binary using the
   # reMarkable's /usr/lib/libssl.so.3 (OpenSSL 3.5) and libzstd.so.1 instead of
@@ -60,8 +77,8 @@ let
   });
 in
 {
-  inherit re-fsd-armv7 re-fsd-armv7-rustls;
+  inherit re-fsd-armv7 re-fsd-armv7-rustls re-fsd-aarch64;
 
-  # The agent by TLS backend: "openssl" (default) or "rustls" (static).
+  # The reMarkable 1/2 agent by TLS backend: "openssl" (default) or "rustls" (static).
   agentFor = tls: { openssl = re-fsd-armv7; rustls = re-fsd-armv7-rustls; }.${tls};
 }

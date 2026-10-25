@@ -1,6 +1,6 @@
 # Linux x86_64: the client (re-fs), the native agent (for tests), the checks and
 # the dev shell.
-{ pkgs, craneLib, src, agentFor }:
+{ pkgs, craneLib, src, agentFor, aarch64Agent }:
 let
   common = {
     inherit src;
@@ -19,14 +19,19 @@ let
     doCheck = false; # tests run once, in checks.tests
   } // extra);
 
-  # `re-fs deploy` installs the armv7 agent it was built with.
-  re-fs = member "re-fs" { RE_FSD_ARMV7 = "${agentFor "openssl"}/bin/re-fsd"; };
+  # `re-fs deploy` installs the agent it was built with for the tablet's CPU:
+  # armv7 (reMarkable 1/2) with the given TLS backend, or aarch64 (Paper Pro).
+  client = tls: member "re-fs" {
+    RE_FSD_ARMV7 = "${agentFor tls}/bin/re-fsd";
+    RE_FSD_AARCH64 = "${aarch64Agent}/bin/re-fsd";
+  };
+  re-fs = client "openssl";
 in
 {
   packages = {
     inherit re-fs;
-    # The same client, deploying the static rustls agent.
-    re-fs-rustls-agent = member "re-fs" { RE_FSD_ARMV7 = "${agentFor "rustls"}/bin/re-fsd"; };
+    # The same client, deploying the static rustls agent to a reMarkable 1/2 too.
+    re-fs-rustls-agent = client "rustls";
     re-fsd = member "re-fsd" { };
   };
 

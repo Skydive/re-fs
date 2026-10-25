@@ -13,7 +13,7 @@
   # The builds live in nix/:
   #   toolchain.nix  Rust toolchain with the cross targets, crane, the source filter
   #   linux.nix      x86_64 Linux: the client, the native agent, checks, dev shell
-  #   tablet.nix     the reMarkable agent for ARMv7 (OpenSSL default, rustls static)
+  #   tablet.nix     the tablet agent: ARMv7 for rM1/2 (OpenSSL default, rustls static), aarch64 for the Paper Pro
   #   windows.nix    the Windows client (MinGW)
   #   nixos.nix, home-manager.nix   USB auto-mount modules
   outputs = { self, nixpkgs, crane, fenix }:
@@ -23,7 +23,11 @@
       inherit (import ./nix/toolchain.nix { inherit pkgs crane fenix system; }) craneLib src targets;
       tablet = import ./nix/tablet.nix { inherit pkgs craneLib src targets; };
       windows = import ./nix/windows.nix { inherit pkgs craneLib src targets; };
-      linux = import ./nix/linux.nix { inherit pkgs craneLib src; inherit (tablet) agentFor; };
+      linux = import ./nix/linux.nix {
+        inherit pkgs craneLib src;
+        inherit (tablet) agentFor;
+        aarch64Agent = tablet.re-fsd-aarch64;
+      };
     in
     {
       # USB auto-mount: the NixOS module names the tablet's USB network device; the
@@ -36,13 +40,13 @@
       lib.${system} = { inherit (tablet) agentFor; };
 
       packages.${system} = linux.packages // {
-        inherit (tablet) re-fsd-armv7 re-fsd-armv7-rustls;
+        inherit (tablet) re-fsd-armv7 re-fsd-armv7-rustls re-fsd-aarch64;
         inherit (windows) re-fs-windows;
         default = self.packages.${system}.re-fs;
       };
 
       checks.${system} = linux.checks // {
-        inherit (tablet) re-fsd-armv7 re-fsd-armv7-rustls;
+        inherit (tablet) re-fsd-armv7 re-fsd-armv7-rustls re-fsd-aarch64;
         inherit (windows) re-fs-windows;
       };
 

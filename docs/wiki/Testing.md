@@ -1,7 +1,7 @@
 # Testing
 
 ```
-nix flake check                                   # tests, tests-rustls, clippy, both armv7 agents
+nix flake check                                   # tests, tests-rustls, clippy, all three tablet agents
 cargo test --workspace                            # unit and integration tests (OpenSSL agent)
 cargo test -p re-fsd --no-default-features --features rustls    # transport tests with rustls
 cargo test -p re-proto --features json --release -- --ignored --nocapture   # tree build speed on mirror/

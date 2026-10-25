@@ -35,6 +35,22 @@ Transports are tried in this order on each connect, and re-fs stays on the one i
 until it drops: `--usb` (only while the cable is in), each `--tls ADDR`, each
 `--tcp ADDR`, then `--ssh HOST`.
 
+### Tablet models
+
+`re-fs deploy` asks the tablet for its CPU (`uname -m`, plus its model name from
+`/proc/device-tree/model`) and installs the agent built for it. It refuses any
+`--binary` built for a different CPU.
+
+| Model | CPU | Agent `deploy` installs | Status |
+|---|---|---|---|
+| reMarkable 1 | armv7 (Cortex-A9) | `re-fsd-armv7` (OpenSSL) | untested |
+| reMarkable 2 | armv7 (Cortex-A7) | `re-fsd-armv7` (OpenSSL) | in daily use |
+| Paper Pro, Paper Pro Move | aarch64 (Cortex-A53/A55) | `re-fsd-aarch64` (rustls, static) | builds and runs under qemu; not tried on a device |
+
+The Paper Pro gives root over SSH only in developer mode, and turning that on wipes
+the tablet. Its agent is the static rustls build, so it doesn't depend on that OS's
+glibc or OpenSSL.
+
 ### Auto-mount on USB
 
 The flake has a NixOS module (`nixosModules.default`, a udev rule naming the tablet's USB
@@ -141,23 +157,42 @@ self-contained `.exe`). Everything except `mount` works there; mounting needs a 
 backend, which isn't written yet.
 
 ```sh
-nix build .#re-fs                  # client; `deploy` installs the OpenSSL agent
-nix build .#re-fs-rustls-agent     # client; `deploy` installs the static rustls agent
-nix build .#re-fsd-armv7           # agent with the tablet's OpenSSL (default): 788 KB, dynamic glibc
-nix build .#re-fsd-armv7-rustls    # agent with rustls + ring: 1.79 MB, static musl
+nix build .#re-fs                  # client; `deploy` installs the OpenSSL agent (rM1/2) or the aarch64 one
+nix build .#re-fs-rustls-agent     # client; `deploy` installs a static rustls agent on every model
+nix build .#re-fsd-armv7           # rM1/2 agent with the tablet's OpenSSL (default): 788 KB, dynamic glibc
+nix build .#re-fsd-armv7-rustls    # rM1/2 agent with rustls + ring: 1.79 MB, static musl
+nix build .#re-fsd-aarch64         # Paper Pro agent with rustls + ring: 2.56 MB, static musl
 nix build .#re-fs-windows          # re-fs.exe for Windows (x86_64): ls, push, pair, deploy; no mount yet
 nix flake check                    # tests (both TLS backends), clippy, both agents, Windows client
 nix develop                        # cargo, rust-analyzer
 ```
 
 `flake.nix` only wires things up; the builds are in `nix/`: `toolchain.nix`,
-`linux.nix` (client, checks, dev shell), `tablet.nix` (the two ARM agents) and
+`linux.nix` (client, checks, dev shell), `tablet.nix` (the three ARM agents) and
 `windows.nix`. See [Build and cross-compilation](docs/wiki/Build-and-Cross-Compilation.md).
 
 The agent's TLS backend is a cargo feature: `openssl` (default; links the tablet's
 `/usr/lib/libssl.so.3`, OpenSSL 3.5.6) or `rustls` (`--no-default-features
 --features rustls`). The rustls build cross-compiles ring's C with nixpkgs' cached
 ARMv7 GCC against musl headers and links everything with rust-lld.
+
+### Without Nix (Arch, Debian, …)
+
+`tools/build.sh` builds the client and the static rustls agents (armv7 and aarch64)
+with rustup and clang, and with `--prefix` installs them so `re-fs deploy` finds
+the agents:
+
+```sh
+sudo pacman -S --needed rustup base-devel clang curl fuse3 openssh          # Arch
+sudo apt-get install rustup build-essential clang curl fuse3 openssh-client # Debian 13 (Ubuntu: likely the same, untested)
+
+tools/build.sh --prefix ~/.local        # ~/.local/bin/re-fs, ~/.local/lib/re-fs/re-fsd-{armv7,aarch64}
+```
+
+clang compiles the agents' C (ring, zstd) for each CPU against musl's headers. The
+script fetches the headers once from musl.libc.org into `target/musl-headers/`, and
+rust-lld links the agents. No ARM GCC or sysroot is needed. The OpenSSL agent stays
+Nix-only, because it needs an ARMv7 OpenSSL and a glibc no newer than the tablet's.
 
 ## Measured on a reMarkable 2
 

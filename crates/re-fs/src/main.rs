@@ -185,7 +185,8 @@ enum Cmd {
     Deploy {
         /// ssh destination, e.g. root@tablet.vpn
         host: String,
-        /// The armv7 re-fsd binary (default: the one this re-fs was built with).
+        /// The re-fsd binary (default: the one this re-fs was built with for the
+        /// tablet's CPU: armv7 for a reMarkable 1/2, aarch64 for a Paper Pro).
         #[arg(long)]
         binary: Option<PathBuf>,
         /// Also install the re-fsd socket-activated service (port 7745). Without it,
@@ -385,14 +386,91 @@ const SERVICE_UNIT: &str = include_str!("../../../deploy/re-fsd.service");
 const SOCKET_UNIT: &str = include_str!("../../../deploy/re-fsd.socket");
 const INSTALL_SH: &str = include_str!("../../../deploy/install.sh");
 
+/// A tablet CPU, as far as choosing an agent goes.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Arch {
+    /// reMarkable 1 and 2.
+    Armv7,
+    /// reMarkable Paper Pro and Paper Pro Move.
+    Aarch64,
+}
+
+impl Arch {
+    /// From the tablet's `uname -m`.
+    fn from_uname(machine: &str) -> Option<Arch> {
+        match machine {
+            "aarch64" | "arm64" => Some(Arch::Aarch64),
+            m if m.starts_with("armv7") => Some(Arch::Armv7),
+            _ => None,
+        }
+    }
+
+    /// What an ELF executable runs on, from its header's e_machine.
+    fn of_elf(bytes: &[u8]) -> Option<Arch> {
+        if bytes.len() < 20 || bytes[..4] != *b"\x7fELF" {
+            return None;
+        }
+        match u16::from_le_bytes([bytes[18], bytes[19]]) {
+            40 => Some(Arch::Armv7),
+            183 => Some(Arch::Aarch64),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Arch::Armv7 => "armv7",
+            Arch::Aarch64 => "aarch64",
+        }
+    }
+
+    /// The agent this re-fs was built with for this CPU.
+    fn built_agent(self) -> Option<&'static str> {
+        match self {
+            Arch::Armv7 => option_env!("RE_FSD_ARMV7"),
+            Arch::Aarch64 => option_env!("RE_FSD_AARCH64"),
+        }
+    }
+}
+
+/// The tablet's `uname -m` and model (e.g. "reMarkable 2.0"), asked over ssh.
+fn tablet_machine(host: &str) -> Result<(String, String)> {
+    let out = std::process::Command::new("ssh")
+        .args(["-o", "BatchMode=yes", host, "uname -m; tr -d '\\0' < /proc/device-tree/model 2>/dev/null; echo"])
+        .output()
+        .context("running ssh")?;
+    if !out.status.success() {
+        bail!("{host}: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    // The device-tree model ends in a NUL.
+    let mut lines = text.lines().map(|l| l.trim_matches(|c: char| c.is_whitespace() || c == '\0'));
+    let machine = lines.next().unwrap_or_default().to_owned();
+    let model = lines.next().filter(|m| !m.is_empty()).unwrap_or("reMarkable").to_owned();
+    Ok((machine, model))
+}
+
 /// Copy re-fsd to AGENT_DIR on the tablet, replacing any running copy atomically,
-/// and optionally install the service.
+/// and optionally install the service. The agent is picked by the tablet's CPU.
 fn deploy(host: &str, binary: Option<PathBuf>, service: bool) -> Result<()> {
-    let binary = match binary.or_else(|| option_env!("RE_FSD_ARMV7").map(PathBuf::from)) {
+    let (machine, model) = tablet_machine(host)?;
+    let Some(arch) = Arch::from_uname(&machine) else {
+        bail!("{host} ({model}) has a CPU re-fs has no agent for: {machine}");
+    };
+    eprintln!("re-fs: {host} is a {model} ({machine})");
+    let binary = match binary.or_else(|| arch.built_agent().map(PathBuf::from)) {
         Some(b) => b,
-        None => bail!("give --binary (e.g. $(nix build .#re-fsd-armv7 --print-out-paths)/bin/re-fsd)"),
+        None => bail!(
+            "this re-fs was built without an {0} agent; give --binary (e.g. $(nix build .#re-fsd-{0} --print-out-paths)/bin/re-fsd)",
+            arch.name()
+        ),
     };
     let bytes = std::fs::read(&binary).with_context(|| format!("reading {}", binary.display()))?;
+    match Arch::of_elf(&bytes) {
+        Some(a) if a == arch => {}
+        Some(a) => bail!("{} is an {} agent, but {host} needs {}", binary.display(), a.name(), arch.name()),
+        None => bail!("{} isn't an ARM executable", binary.display()),
+    }
     let mut script = format!(
         "set -e; mkdir -p {AGENT_DIR}; cat > {AGENT_DIR}/re-fsd.new; chmod 755 {AGENT_DIR}/re-fsd.new; \
          mv -f {AGENT_DIR}/re-fsd.new {DEFAULT_AGENT}; {DEFAULT_AGENT} --version\n"
@@ -476,5 +554,19 @@ mod tests {
         assert_eq!(super::date(0), "1970-01-01");
         assert_eq!(super::date(1_701_100_163_735), "2023-11-27");
         assert_eq!(super::date(951_782_400_000), "2000-02-29");
+    }
+
+    #[test]
+    fn tablet_arch() {
+        use super::Arch;
+        assert_eq!(Arch::from_uname("armv7l"), Some(Arch::Armv7));
+        assert_eq!(Arch::from_uname("aarch64"), Some(Arch::Aarch64));
+        assert_eq!(Arch::from_uname("x86_64"), None);
+        // ELF headers: e_machine 40 (ARM), 183 (AArch64), 62 (x86-64).
+        let elf = |m: u16| [b"\x7fELF".as_slice(), &[1, 1, 1, 0], &[0; 10], &m.to_le_bytes()].concat();
+        assert_eq!(Arch::of_elf(&elf(40)), Some(Arch::Armv7));
+        assert_eq!(Arch::of_elf(&elf(183)), Some(Arch::Aarch64));
+        assert_eq!(Arch::of_elf(&elf(62)), None);
+        assert_eq!(Arch::of_elf(b"#!/bin/sh\n"), None);
     }
 }
