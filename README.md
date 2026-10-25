@@ -21,6 +21,9 @@ ssh key in its `/home/root/.ssh/authorized_keys`:
 re-fs deploy root@10.11.99.1 --service
 ```
 
+If this fails on ssh, copy your key over first with `ssh-copy-id root@10.11.99.1`; see
+[SSH access](https://remarkable.guide/guide/access/ssh.html) for the tablet's root password.
+
 **3. Mount it:**
 
 ```sh
