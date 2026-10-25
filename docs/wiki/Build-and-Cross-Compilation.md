@@ -61,6 +61,40 @@ flowchart LR
 `deploy/` are embedded with `include_str!`; the source filter keeps `deploy/` and
 `tests/data/` alongside Cargo sources.
 
+## Without Nix
+
+`tools/build.sh [--prefix DIR]` builds the same static rustls agent and the client
+on an ordinary distribution. It needs rustup, a host C compiler, clang, curl and make:
+
+```sh
+sudo pacman -S --needed rustup base-devel clang curl fuse3 openssh           # Arch
+sudo apt-get install rustup build-essential clang curl fuse3 openssh-client  # Debian 13, Ubuntu 24.04
+sudo dnf install rustup gcc clang curl make fuse3 openssh-clients           # Fedora
+sudo zypper in rustup gcc clang curl make fuse3 openssh-clients             # openSUSE Tumbleweed
+sudo apk add rustup build-base clang curl fuse3 openssh-client              # Alpine
+```
+
+It does what `tablet.nix` does, using other tools:
+
+| | Nix | `tools/build.sh` |
+|---|---|---|
+| Rust + armv7 musl std | fenix | `rustup target add armv7-unknown-linux-musleabihf` (minimal profile) |
+| musl headers | `armPkgs.musl.dev` | musl 1.2.5 source, `make ARCH=arm install-headers` (no compiler), cached in `target/musl-headers` |
+| C compiler for ring/zstd | nixpkgs' ARMv7 GCC | host `clang` (cc-rs passes `--target=armv7-unknown-linux-musleabihf`) with `-nostdinc -isystem <musl>/include -isystem <clang resource dir>/include` |
+| Archiver | ARMv7 binutils | `llvm-ar` if installed, else `ar` |
+| Linker | rust-lld, self-contained musl (`.cargo/config.toml`) | same |
+| `RE_FSD_ARMV7` | the agent's store path | `DIR/lib/re-fs/re-fsd` with `--prefix`, otherwise `target/…/re-fsd` |
+
+`RE_FSD_ARMV7` is a path read when `deploy` runs (the agent isn't embedded), so with
+`--prefix` the agent is installed first and the client is built pointing at it.
+
+Tested in clean `archlinux`, `debian:trixie`, `ubuntu:24.04`, `fedora`,
+`opensuse/tumbleweed` and `alpine` containers: each produces an x86-64
+`re-fs` and a statically linked ARM EABI5 `re-fsd` of 2.25–2.4 MB (against 1.79 MB
+from Nix; not looked into yet). The OpenSSL agent isn't covered.
+It would need an ARMv7 OpenSSL and zstd to link against, and a glibc no newer than
+the tablet's 2.39, which rules out linking against Debian 13's 2.41 armhf libraries.
+
 ## The OpenSSL agent (default)
 
 The tablet already ships OpenSSL 3.5.6 (`/usr/lib/libssl.so.3` 800 KB,

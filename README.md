@@ -20,6 +20,7 @@ and `rm` into safe edits on the tablet.
 
 ```sh
 nix build .#re-fs                                   # client (embeds the matching agent)
+                                                    # no Nix: tools/build.sh, see Building
 
 ./result/bin/re-fs deploy root@10.11.99.1 --service # once, over USB: agent, systemd
                                                     # socket, TLS key; pins the tablet key
@@ -158,6 +159,26 @@ The agent's TLS backend is a cargo feature: `openssl` (default; links the tablet
 `/usr/lib/libssl.so.3`, OpenSSL 3.5.6) or `rustls` (`--no-default-features
 --features rustls`). The rustls build cross-compiles ring's C with nixpkgs' cached
 ARMv7 GCC against musl headers and links everything with rust-lld.
+
+### Without Nix (Arch, Debian, Ubuntu, Fedora, openSUSE, Alpine)
+
+`tools/build.sh` builds the client and the static rustls agent with rustup and
+clang, and with `--prefix` installs both so `re-fs deploy` finds the agent:
+
+```sh
+sudo pacman -S --needed rustup base-devel clang curl fuse3 openssh           # Arch
+sudo apt-get install rustup build-essential clang curl fuse3 openssh-client  # Debian 13, Ubuntu 24.04
+sudo dnf install rustup gcc clang curl make fuse3 openssh-clients           # Fedora
+sudo zypper in rustup gcc clang curl make fuse3 openssh-clients             # openSUSE Tumbleweed
+sudo apk add rustup build-base clang curl fuse3 openssh-client              # Alpine
+
+tools/build.sh --prefix ~/.local        # ~/.local/bin/re-fs, ~/.local/lib/re-fs/re-fsd
+```
+
+clang compiles the agent's C (ring, zstd) for armv7 against musl's headers. The
+script fetches the headers once from musl.libc.org into `target/musl-headers`, and
+rust-lld links the agent. No ARM GCC or sysroot is needed. The OpenSSL agent stays
+Nix-only, because it needs an ARMv7 OpenSSL and a glibc no newer than the tablet's.
 
 ## Measured on a reMarkable 2
 
