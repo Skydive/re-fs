@@ -18,11 +18,23 @@ use crate::cache::Cache;
 use crate::client::Client;
 use crate::transport::{self, Target};
 
-/// What the mount backend (FUSE today) must drop from the OS's caches when the
+/// What the mount backend (FUSE or WinFsp) must drop from the OS's caches when the
 /// tree changes. Calls may block; they're made off the async workers.
 pub trait Invalidate: Send + Sync {
     fn inode(&self, ino: u64);
     fn entry(&self, parent: u64, name: &str);
+
+    /// One tree change at once. Backends that notify by path (WinFsp) need `old` to
+    /// name what went away; inode-based ones (FUSE) take the default.
+    fn tree_changed(&self, old: &Tree, new: &Tree, inval: &[Invalidation]) {
+        let _ = (old, new);
+        for i in inval {
+            match i {
+                Invalidation::Inode(ino) => self.inode(*ino),
+                Invalidation::Entry { parent, name } => self.entry(*parent, name),
+            }
+        }
+    }
 }
 
 pub struct Shared {
@@ -72,7 +84,8 @@ impl Shared {
         })
     }
 
-    /// Make the kernel forget an inode's cached attributes and pages.
+    /// Make the kernel forget an inode's cached attributes and pages (FUSE).
+    #[cfg(unix)]
     pub async fn invalidate_inode(&self, ino: u64) {
         let notifier = self.notifier.lock().unwrap().clone();
         if let Some(n) = notifier {
@@ -196,7 +209,7 @@ async fn sync(client: &Client, shared: &Shared, opts: &TreeOptions, index: &mut 
         index.entries.insert(e.uuid, e);
     }
     index.at = Some((instance, generation));
-    let inval = publish(shared, opts, index, generation);
+    let (old, inval) = publish(shared, opts, index, generation);
     if changed > 0 {
         // Off the critical path: writes wait for the tree, not for this.
         let (cache, snapshot) = (shared.cache.clone(), shared.entries.load_full());
@@ -210,12 +223,13 @@ async fn sync(client: &Client, shared: &Shared, opts: &TreeOptions, index: &mut 
         t0.elapsed(),
         client.rate() as f64 / 1e6
     ));
-    invalidate(shared, inval).await;
+    invalidate(shared, old, inval).await;
     Ok(())
 }
 
-/// Build the tree from `index`, swap it in, and return what the kernel must forget.
-fn publish(shared: &Shared, opts: &TreeOptions, index: &Index, generation: u64) -> Vec<Invalidation> {
+/// Build the tree from `index`, swap it in, and return the old tree and what the
+/// kernel must forget.
+fn publish(shared: &Shared, opts: &TreeOptions, index: &Index, generation: u64) -> (Arc<Tree>, Vec<Invalidation>) {
     let list: Vec<Entry> = index.entries.values().cloned().collect();
     let tree = Tree::build(&list, generation, opts);
     for w in tree.warnings() {
@@ -224,22 +238,16 @@ fn publish(shared: &Shared, opts: &TreeOptions, index: &Index, generation: u64) 
     let old = shared.tree.swap(Arc::new(tree));
     shared.entries.store(Arc::new(index.entries.clone()));
     shared.generation.send_replace(generation);
-    old.diff(&shared.tree.load())
+    let inval = old.diff(&shared.tree.load());
+    (old, inval)
 }
 
-async fn invalidate(shared: &Shared, inval: Vec<Invalidation>) {
+async fn invalidate(shared: &Shared, old: Arc<Tree>, inval: Vec<Invalidation>) {
     let Some(notifier) = shared.notifier.lock().unwrap().clone() else { return };
     if inval.is_empty() {
         return;
     }
-    // Writes to /dev/fuse; keep it off the async workers.
-    let _ = tokio::task::spawn_blocking(move || {
-        for i in inval {
-            match &i {
-                Invalidation::Inode(ino) => notifier.inode(*ino),
-                Invalidation::Entry { parent, name } => notifier.entry(*parent, name),
-            }
-        }
-    })
-    .await;
+    let new = shared.tree.load_full();
+    // Writes to /dev/fuse (or calls into WinFsp); keep it off the async workers.
+    let _ = tokio::task::spawn_blocking(move || notifier.tree_changed(&old, &new, &inval)).await;
 }

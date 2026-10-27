@@ -5,7 +5,7 @@ use std::fs::File;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use libc::{EBUSY, EHOSTDOWN, EINVAL, EIO, ENOENT, ENOTEMPTY, EPERM, ETIMEDOUT};
+use crate::errno::{EAGAIN, EBUSY, EHOSTDOWN, EINVAL, EIO, ENOENT, ENOTDIR, ENOTEMPTY, EPERM, ETIMEDOUT};
 use re_proto::index::naming;
 use re_proto::index::parse::{Metadata, ParentRef};
 use re_proto::index::plan;
@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::client::{CallError, Client};
 use crate::session::Shared;
 
-pub type Errno = i32;
+pub use crate::errno::Errno;
 
 
 fn now_ms() -> i64 {
@@ -32,7 +32,7 @@ fn errno(e: CallError) -> Errno {
     match e {
         CallError::Closed => EHOSTDOWN,
         // The tablet changed the item since we last looked; the caller can retry.
-        CallError::Remote { code: ErrorCode::Conflict, .. } => libc::EAGAIN,
+        CallError::Remote { code: ErrorCode::Conflict, .. } => EAGAIN,
         CallError::Remote { code: ErrorCode::NotFound, .. } => ENOENT,
         _ => EIO,
     }
@@ -46,7 +46,7 @@ pub fn parent_ref(tree: &Tree, ino: u64) -> Result<ParentRef, Errno> {
         NodeKind::Trash => Ok(ParentRef::Trash),
         NodeKind::Folder => Ok(ParentRef::Folder(n.uuid.expect("folders have uuids"))),
         NodeKind::LostFound => Err(EPERM),
-        _ => Err(libc::ENOTDIR),
+        _ => Err(ENOTDIR),
     }
 }
 

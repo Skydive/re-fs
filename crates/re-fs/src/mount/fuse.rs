@@ -1,4 +1,4 @@
-//! The FUSE side. Lookups and listings answer from the in-memory tree snapshot, so
+//! The FUSE backend (Linux). Lookups and listings answer from the in-memory tree snapshot, so
 //! browsing never waits on the network. Writes (unless --ro) are handed to tokio and
 //! answered once the tablet has applied them (see write.rs).
 
@@ -32,7 +32,7 @@ const TTL: Duration = Duration::from_secs(60);
 /// with its own icon: GVfs (Thunar, Nautilus) reads `.xdg-volume-info` from a mount's
 /// root for its name and icon. Fixed inodes in the reserved range below 16.
 const VOLUME_INFO: (u64, &str, &[u8]) = (9, ".xdg-volume-info", b"[Volume Info]\nName=reMarkable\nIconFile=.re-fs-icon.svg\n");
-const VOLUME_ICON: (u64, &str, &[u8]) = (10, ".re-fs-icon.svg", include_bytes!("../../../deploy/re-fs-icon.svg"));
+const VOLUME_ICON: (u64, &str, &[u8]) = (10, ".re-fs-icon.svg", include_bytes!("../../../../deploy/re-fs-icon.svg"));
 const ROOT_FILES: [(u64, &str, &[u8]); 2] = [VOLUME_INFO, VOLUME_ICON];
 
 fn root_file_by_ino(ino: u64) -> Option<&'static [u8]> {

@@ -86,15 +86,15 @@ pub enum ReadError {
     Call(#[from] CallError),
 }
 
-#[cfg(unix)]
 impl ReadError {
     pub fn errno(&self) -> i32 {
+        use crate::errno::{EHOSTDOWN, EIO, ETIMEDOUT};
         match self {
-            ReadError::Offline => libc::EHOSTDOWN,
-            ReadError::Timeout => libc::ETIMEDOUT,
-            ReadError::Io(e) => e.raw_os_error().unwrap_or(libc::EIO),
-            ReadError::Call(CallError::Closed) => libc::EHOSTDOWN,
-            ReadError::Failed(_) | ReadError::Call(_) => libc::EIO,
+            ReadError::Offline => EHOSTDOWN,
+            ReadError::Timeout => ETIMEDOUT,
+            ReadError::Io(e) => crate::errno::of_io(e),
+            ReadError::Call(CallError::Closed) => EHOSTDOWN,
+            ReadError::Failed(_) | ReadError::Call(_) => EIO,
         }
     }
 }
@@ -144,7 +144,9 @@ impl Cache {
         Some(f)
     }
 
-    /// Start downloading `key` unless it's cached or already on its way.
+    /// Start downloading `key` unless it's cached or already on its way. (FUSE opens
+    /// do; on Windows the first read does, so Explorer browsing downloads nothing.)
+    #[cfg(unix)]
     pub fn prefetch(self: &Arc<Self>, shared: &Shared, key: &Key) {
         if key.size == 0 || self.object(key).exists() {
             return;

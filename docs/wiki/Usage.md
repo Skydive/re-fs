@@ -233,6 +233,44 @@ under `/run/media/$USER/` as removable drives with an eject button. To get that,
 to you). A real gvfs backend would be a C plugin inside GVfs, which isn't worth it for
 a sidebar entry.
 
+## Windows
+
+Install [WinFsp](https://winfsp.dev/rel/) (the driver, once), and keep `re-fs.exe`
+and `re-fsw.exe` in the same folder.
+
+```bat
+re-fs mount R: --usb --tls tablet.lan   :: drive R:; Ctrl-C or closing the window unmounts
+re-fs mount * --usb                     :: the next free drive letter
+re-fs mount C:\Users\you\reMarkable --usb  :: a folder (it must not exist yet)
+re-fs mount R: --usb --follow-usb       :: only while the cable is in; waits for it
+```
+
+**Auto-mount on USB:** `re-fs autostart [--mountpoint R:] [-- MOUNT-ARGS…]` registers
+`re-fsw.exe mount R: --usb --follow-usb …` to run at login (under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and starts it now. `re-fsw.exe`
+runs `re-fs.exe` without a console window; its output goes to
+`%LOCALAPPDATA%\re-fs\re-fs.log`. With `--follow-usb`, re-fs waits for the tablet's
+USB network (10.11.99.x), mounts, and unmounts once the cable has been out for 5 s.
+`re-fs autostart --off` removes it and stops the running one. Windows can't tell
+which network adapter is USB, so the 10.11.99.x address alone identifies the tablet.
+
+**Names.** The tree is built with Windows names: `< > : " \ | ? *` show as look-alikes
+(`＜ ＞ ꞉ ＂ ⧵ ｜ ？ ＊`), trailing spaces and dots as U+2002 / U+2024 (Windows would strip
+them), device names like `CON` get a ` _` suffix (`CON _.pdf`), and names that differ
+only in case are numbered like any other clash, since the drive is case-insensitive.
+Renaming maps the look-alikes back. Names starting with `.` (`.trash`, `.originals`, …)
+are hidden files.
+
+**Differences from Linux.** Generated files (annotated PDFs, notebooks, `.rmdoc`,
+highlights) are made when first opened for reading, so their size is right from the
+start; listing a folder in Explorer doesn't make or download anything. A file being
+copied in goes to the tablet when the copying program closes it; Windows has no way to
+report a failure then, so it's printed (and logged), and the file doesn't appear.
+Deleting moves to the tablet's trash (Explorer asks first, as there's no Recycle Bin
+on this drive). Explorer refreshes when the tablet changes (WinFsp change
+notifications). Paths: the cache and log are in `%LOCALAPPDATA%\re-fs`, settings
+(the pinned TLS key) in `%APPDATA%\re-fs`, the ssh key in `%USERPROFILE%\.ssh`.
+
 ## Without mounting
 
 ```sh

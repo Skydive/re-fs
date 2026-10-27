@@ -32,3 +32,20 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 if-addrs = "0.13"
+# WinFsp is loaded at run time (mount/winfsp/ffi.rs); these are the Win32 calls around it.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+] }
+
+[features]
+# re-fsw.exe, the windowless launcher `re-fs autostart` uses (built for Windows only).
+windows-launcher = []
+
+[[bin]]
+name = "re-fsw"
+path = "src/bin/re-fsw.rs"
+required-features = ["windows-launcher"]

@@ -49,6 +49,85 @@ pub fn numbered(name: &str, ext: &str, n: u32) -> String {
     base + &suffix + ext
 }
 
+/// Characters Windows refuses in a file name, and the look-alikes shown instead.
+const WINDOWS_STANDINS: [(char, char); 9] = [
+    ('<', '＜'),
+    ('>', '＞'),
+    (':', '꞉'),
+    ('"', '＂'),
+    ('\\', '⧵'),
+    ('|', '｜'),
+    ('?', '？'),
+    ('*', '＊'),
+    ('/', SLASH_STANDIN),
+];
+/// Windows strips trailing spaces and dots; these keep them visible. U+2002 EN SPACE,
+/// U+2024 ONE DOT LEADER.
+const TRAILING_SPACE: char = '\u{2002}';
+const TRAILING_DOT: char = '․';
+const DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3",
+    "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+/// Appended to a reserved device name's stem: "CON.pdf" shows as "CON _.pdf".
+const DEVICE_SUFFIX: &str = " _";
+
+fn is_device_name(stem: &str) -> bool {
+    DEVICE_NAMES.iter().any(|d| d.eq_ignore_ascii_case(stem))
+}
+
+/// A filename (from `file_name` or `numbered`) made valid on Windows: forbidden
+/// characters and control codes shown as look-alikes, trailing spaces and dots kept
+/// visible, and reserved device names given a suffix. Applying it twice is harmless.
+pub fn windows_name(name: &str) -> String {
+    let mut s: String = name
+        .chars()
+        .map(|c| match WINDOWS_STANDINS.iter().find(|(from, _)| *from == c) {
+            Some(&(_, to)) => to,
+            // U+2400 CONTROL PICTURES: ␁ for 0x01 …
+            None if (c as u32) < 0x20 => char::from_u32(0x2400 + c as u32).unwrap_or('_'),
+            None => c,
+        })
+        .collect();
+    let kept = s.trim_end_matches([' ', '.']).len();
+    let tail: String = s[kept..].chars().map(|c| if c == ' ' { TRAILING_SPACE } else { TRAILING_DOT }).collect();
+    s.truncate(kept);
+    s += &tail;
+    let stem_len = s.find('.').unwrap_or(s.len());
+    if is_device_name(s[..stem_len].trim_end_matches(TRAILING_SPACE)) {
+        s.insert_str(stem_len, DEVICE_SUFFIX);
+    }
+    s
+}
+
+/// The inverse of `windows_name`, for a name typed on Windows (before `visible_name`).
+pub fn from_windows_name(name: &str) -> String {
+    let mut s = name.to_owned();
+    let stem_len = s.find('.').unwrap_or(s.len());
+    if let Some(stem) = s[..stem_len].strip_suffix(DEVICE_SUFFIX) {
+        if is_device_name(stem.trim_end_matches(TRAILING_SPACE)) {
+            s.replace_range(stem.len()..stem_len, "");
+        }
+    }
+    let kept = s.trim_end_matches([TRAILING_SPACE, TRAILING_DOT]).len();
+    let tail: String = s[kept..].chars().map(|c| if c == TRAILING_SPACE { ' ' } else { '.' }).collect();
+    s.truncate(kept);
+    s += &tail;
+    s.chars()
+        .map(|c| match WINDOWS_STANDINS.iter().find(|(_, to)| *to == c) {
+            // The slash stand-in is also what other platforms show; visible_name maps it.
+            Some(&(from, to)) if to != SLASH_STANDIN => from,
+            _ if (0x2401..0x2420).contains(&(c as u32)) => char::from_u32(c as u32 - 0x2400).unwrap_or(c),
+            _ => c,
+        })
+        .collect()
+}
+
+/// A name as Windows compares them (the volume is case-insensitive).
+pub fn fold_case(name: &str) -> String {
+    name.chars().flat_map(char::to_uppercase).collect()
+}
+
 fn truncate_base(s: &mut String, max: usize) {
     if s.len() > max {
         let mut cut = max;
@@ -110,5 +189,49 @@ mod tests {
     fn numbering() {
         assert_eq!(numbered("Notes.pdf", ".pdf", 2), "Notes (2).pdf");
         assert_eq!(numbered("Books", "", 3), "Books (3)");
+    }
+
+    #[test]
+    fn windows_forbidden_characters() {
+        assert_eq!(windows_name("Chapter 1: Intro?.pdf"), "Chapter 1꞉ Intro？.pdf");
+        assert_eq!(windows_name(r#"a<b>c"d\e|f*g"#), "a＜b＞c＂d⧵e｜f＊g");
+        assert_eq!(windows_name("01∕02∕24.pdf"), "01∕02∕24.pdf");
+        assert_eq!(windows_name("tab\there"), "tab␉here");
+    }
+
+    #[test]
+    fn windows_trailing_spaces_and_dots() {
+        assert_eq!(windows_name("03 Physics "), "03 Physics\u{2002}");
+        assert_eq!(windows_name("Wait..."), "Wait․․․");
+        assert_eq!(windows_name("a. ."), "a․\u{2002}․");
+        assert_eq!(windows_name("x.pdf"), "x.pdf");
+    }
+
+    #[test]
+    fn windows_device_names() {
+        assert_eq!(windows_name("CON"), "CON _");
+        assert_eq!(windows_name("con.pdf"), "con _.pdf");
+        assert_eq!(windows_name("LPT9.annotated.pdf"), "LPT9 _.annotated.pdf");
+        assert_eq!(windows_name("CONSOLE.pdf"), "CONSOLE.pdf");
+        assert_eq!(windows_name("COM10"), "COM10");
+    }
+
+    #[test]
+    fn windows_round_trip() {
+        for name in ["Chapter 1: Intro?", "03 Physics ", "Wait...", "CON", "nul.pdf", r#"a<b>c"d\e|f*g"#, "plain.pdf", "tab\there"] {
+            let w = windows_name(name);
+            assert_eq!(windows_name(&w), w, "idempotent: {name:?}");
+            assert_eq!(from_windows_name(&w), name, "round trip: {name:?}");
+        }
+        // The slash stand-in stays for visible_name to map.
+        assert_eq!(visible_name(&from_windows_name(&windows_name(&file_name("A/B", ""))) ), "A/B");
+    }
+
+    #[test]
+    fn windows_names_fit_in_utf16() {
+        let long = "?".repeat(300);
+        let n = windows_name(&file_name(&long, ".pdf"));
+        assert!(n.encode_utf16().count() <= NAME_MAX);
+        assert_eq!(fold_case("Notes.PDF"), fold_case("notes.pdf"));
     }
 }

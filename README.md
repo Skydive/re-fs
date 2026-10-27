@@ -51,6 +51,20 @@ Without Nix, `deploy/host/install-usb-automount.sh [--mountpoint DIR] [-- MOUNT-
 installs the same udev rule (with sudo) and user service. See
 [Usage: Auto-mount on USB](docs/wiki/Usage.md#auto-mount-on-usb).
 
+### Windows
+
+`nix build .#re-fs-windows` gives `re-fs.exe` and `re-fsw.exe`. Install
+[WinFsp](https://winfsp.dev/rel/) once, put both files in one folder, then:
+
+```bat
+re-fs mount R: --usb                 :: the tablet as drive R: (Ctrl-C to unmount)
+re-fs autostart                      :: from now on, R: appears whenever it's plugged in
+re-fs autostart --off
+```
+
+Names Windows can't show are shown as look-alikes (`Q: why?` as `Q꞉ why？`), and
+mapped back when you rename. See [Usage: Windows](docs/wiki/Usage.md#windows).
+
 ## What's in the mount
 
 ```
@@ -136,16 +150,16 @@ The full usage guide (setup, every option, troubleshooting) is
 
 ## Building
 
-The client also builds for Windows (`re-fs-windows`, cross-compiled with MinGW, one
-self-contained `.exe`). Everything except `mount` works there; mounting needs a WinFsp
-backend, which isn't written yet.
+The client also builds for Windows (`re-fs-windows`, cross-compiled with MinGW:
+`re-fs.exe` plus the small `re-fsw.exe` launcher). Mounting there uses WinFsp, loaded
+at run time, so the build needs no WinFsp SDK.
 
 ```sh
 nix build .#re-fs                  # client; `deploy` installs the OpenSSL agent
 nix build .#re-fs-rustls-agent     # client; `deploy` installs the static rustls agent
 nix build .#re-fsd-armv7           # agent with the tablet's OpenSSL (default): 788 KB, dynamic glibc
 nix build .#re-fsd-armv7-rustls    # agent with rustls + ring: 1.79 MB, static musl
-nix build .#re-fs-windows          # re-fs.exe for Windows (x86_64): ls, push, pair, deploy; no mount yet
+nix build .#re-fs-windows          # re-fs.exe for Windows (x86_64), mounting through WinFsp
 nix flake check                    # tests (both TLS backends), clippy, both agents, Windows client
 nix develop                        # cargo, rust-analyzer
 ```
@@ -181,6 +195,7 @@ returns in 40–100 ms over the LAN. More in [Measurements](docs/wiki/Measuremen
 | TCP over USB, TLS over Wi-Fi, WireGuard, socket-activated service | done |
 | Notebooks, annotated PDFs, highlights, `.rmdoc`, views, xattrs | done |
 | OpenSSL / rustls TLS backends | done |
+| Windows: mount via WinFsp, writes, auto-mount on USB | written, needs testing on Windows |
 | Page templates, typed text | not yet |
 | ssh-agent / passphrase-protected keys | not yet |
 | `.rmdoc` import, trash restore/purge, home-manager module | not yet |

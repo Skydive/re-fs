@@ -2,6 +2,24 @@
 
 ## Windows, step 2: mount with WinFsp
 
+**Status:** written and cross-compiling (`nix build .#re-fs-windows`), clippy-clean,
+naming and tree tests pass on Linux. **Not yet run on Windows**: the "Done when"
+checks below are the test plan. How it came out, where it differs from this plan:
+
+- Bindings: option B, but loaded with `windows-sys` (`LoadLibraryW` from WinFsp's
+  `InstallDir`) rather than `libloading`. Struct layouts are checked against the
+  header sizes at compile time (`mount/winfsp/ffi.rs`).
+- Invalidation by path: `Invalidate` got a default method, `tree_changed(old, new,
+  inval)`; FUSE keeps the default, WinFsp turns entries into `FspFileSystemNotify`
+  paths using the old tree for what went away.
+- Deletes use `CanDelete` (checks) plus `Cleanup` with the delete flag (the trash).
+- No prefetch on open: the first read downloads, so Explorer listing a folder (or
+  opening files only for their attributes) fetches nothing.
+- Auto-mount: `mount --follow-usb` (any platform) mounts while the USB link is up,
+  unmounts 5 s after it goes, and waits again. `re-fs autostart` registers it to run
+  at login (HKCU Run key) through `re-fsw.exe`, a windowless launcher logging to
+  `%LOCALAPPDATA%\re-fs\re-fs.log`.
+
 Step 1 is done: the client builds for Windows (`nix build .#re-fs-windows`), and
 `ls`, `push`, `pair` and `deploy` work there (tested under Wine). `mount` says it
 isn't supported yet. This step adds a mount backend on
@@ -22,7 +40,7 @@ for writes), and Dokan (similar to WinFsp, smaller user base).
 
 ### Decisions to make first
 
-- [ ] **Bindings.** Option A: the `winfsp` crate (winfsp-rs). It's the easy path but
+- [x] **Bindings.** Option A: the `winfsp` crate (winfsp-rs). It's the easy path but
       expects an MSVC build and the WinFsp SDK at build time, which doesn't fit
       cross-compiling with MinGW from NixOS. Option B: our own small FFI to
       `winfsp-x64.dll`'s native API (`FspFileSystemCreate`,
@@ -37,44 +55,44 @@ for writes), and Dokan (similar to WinFsp, smaller user base).
 
 ### W2.1 Groundwork (portable, tested on Linux)
 
-- [ ] `crates/re-fs/src/mount/`: move `fs.rs` to `mount/fuse.rs`, add
+- [x] `crates/re-fs/src/mount/`: move `fs.rs` to `mount/fuse.rs`, add
       `mount/winfsp.rs` behind `cfg(windows)`, and give `main.rs` one `mount`
       entry point that picks the backend.
-- [ ] **Windows file names** (`re_proto::index::naming`, a Windows mode chosen by
+- [x] **Windows file names** (`re_proto::index::naming`, a Windows mode chosen by
       the backend, with unit tests that run on Linux):
-  - [ ] Show `< > : " \ | ? *` as look-alikes (`＜ ＞ ꞉ ＂ ⧵ ｜ ？ ＊`) and map them back
+  - [x] Show `< > : " \ | ? *` as look-alikes (`＜ ＞ ꞉ ＂ ⧵ ｜ ？ ＊`) and map them back
         on rename.
-  - [ ] Keep trailing spaces and dots, which Windows strips, by showing them as
+  - [x] Keep trailing spaces and dots, which Windows strips, by showing them as
         U+2002 / U+2024 (the tablet has folders ending in a space).
-  - [ ] Reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`,
+  - [x] Reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`,
         `LPT1`–`LPT9`, with or without an extension) get a ` _` suffix.
-  - [ ] Detect name clashes case-insensitively (the volume is case-insensitive),
+  - [x] Detect name clashes case-insensitively (the volume is case-insensitive),
         so `Notes.pdf` and `notes.pdf` number like any other clash.
-  - [ ] Keep each name ≤ 255 UTF-16 code units (Windows counts UTF-16, not bytes).
-- [ ] **Paths for invalidation.** `session::Invalidate` is inode-based; WinFsp
+  - [x] Keep each name ≤ 255 UTF-16 code units (Windows counts UTF-16, not bytes).
+- [x] **Paths for invalidation.** `session::Invalidate` is inode-based; WinFsp
       notifications take paths. Extend the trait (or `Tree::diff`) to also give the
       old and new paths, so a backend can notify on either.
 
 ### W2.2 Read-only mount
 
-- [ ] Callbacks: `GetVolumeInfo` (label "reMarkable", sizes as in `statfs`),
+- [x] Callbacks: `GetVolumeInfo` (label "reMarkable", sizes as in `statfs`),
       `GetSecurityByName` / `GetSecurity` (read-only for the current user),
       `Open` / `Close`, `GetFileInfo`, `ReadDirectory` (with marker-based
       continuation), `Read`.
-- [ ] File context = the tree node's inode plus, for generated files, their
+- [x] File context = the tree node's inode plus, for generated files, their
       `GenKey`. Attributes: `FILE_ATTRIBUTE_DIRECTORY` or `READONLY`; times as
       `FILETIME` from the tree's ms timestamps.
-- [ ] Reads go through the existing `Cache` (originals) and `generate::ensure`
+- [x] Reads go through the existing `Cache` (originals) and `generate::ensure`
       (annotated PDFs, notebooks, `.rmdoc`, highlights). Generated files are made
       in `Open`, which may block, because WinFsp's dispatcher has a thread pool.
       Their size is then known before the first `GetFileInfo`, which avoids the
       0-byte problem FUSE has.
-- [ ] Offline: uncached files fail `Open` with `STATUS_HOST_UNREACHABLE` (the
+- [x] Offline: uncached files fail `Open` with `STATUS_HOST_UNREACHABLE` (the
       equivalent of EHOSTDOWN).
-- [ ] Invalidation: implement `session::Invalidate` with `FspFileSystemNotify`
+- [x] Invalidation: implement `session::Invalidate` with `FspFileSystemNotify`
       (`FILE_ACTION_ADDED` / `REMOVED` / `RENAMED_*` / `MODIFIED`), so Explorer
       refreshes when the tablet changes.
-- [ ] `re-fs mount R: --usb --tls tablet.lan`, or a folder mount point; Ctrl-C or
+- [x] `re-fs mount R: --usb --tls tablet.lan`, or a folder mount point; Ctrl-C or
       closing the console unmounts.
 - [ ] **Done when** Explorer browses the tree, PDFs open in Edge and a PDF viewer,
       copying files out works, `.annotated.pdf` and notebooks open on first try,
@@ -82,14 +100,14 @@ for writes), and Dokan (similar to WinFsp, smaller user base).
 
 ### W2.3 Writes (`--rw`)
 
-- [ ] `Create` (file): collect into a staging file like the FUSE `create`; upload
+- [x] `Create` (file): collect into a staging file like the FUSE `create`; upload
       on `Cleanup`/`Close` through `write::import`. Only PDFs and EPUBs; anything
       else fails with `STATUS_ACCESS_DENIED` and a log line.
-- [ ] `Create` (directory) → `write::mkdir`.
-- [ ] `Rename` → `write::rename` (Windows names mapped back as in W2.1).
-- [ ] Delete (`SetDelete` / `Cleanup` with the delete flag) → `write::trash`;
+- [x] `Create` (directory) → `write::mkdir`.
+- [x] `Rename` → `write::rename` (Windows names mapped back as in W2.1).
+- [x] Delete (`SetDelete` / `Cleanup` with the delete flag) → `write::trash`;
       non-empty folders refused.
-- [ ] `write.rs` is Unix-only today because of errnos: return a small error enum
+- [x] `write.rs` is Unix-only today because of errnos: return a small error enum
       that each backend maps (errno for FUSE, NTSTATUS for WinFsp).
 - [ ] **Done when** Explorer can create a folder, drag a PDF in, rename it and
       delete it, all with the same tablet-side results as on Linux.
@@ -98,10 +116,10 @@ for writes), and Dokan (similar to WinFsp, smaller user base).
 
 - [ ] A Windows release zip with `re-fs.exe`, and the armv7 agent embedded
       (`include_bytes!`) so `re-fs deploy` works without `--binary`.
-- [ ] Detect a missing WinFsp at `mount` and point to the installer.
-- [ ] Optional: start at login (Task Scheduler) or register with WinFsp's launcher
+- [x] Detect a missing WinFsp at `mount` and point to the installer.
+- [x] Optional: start at login (Task Scheduler) or register with WinFsp's launcher
       (`launchctl-x64`).
-- [ ] Docs: a Windows section in the README and Usage wiki page (install WinFsp,
+- [x] Docs: a Windows section in the README and Usage wiki page (install WinFsp,
       `%APPDATA%\re-fs`, `%LOCALAPPDATA%\re-fs`, `%USERPROFILE%\.ssh`).
 
 ### Risks

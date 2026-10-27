@@ -1,25 +1,20 @@
 mod auth;
+#[cfg(windows)]
+mod autostart;
 mod cache;
 mod client;
-#[cfg(unix)]
-mod fs;
+mod errno;
 mod import;
 mod generate;
 mod local;
+mod mount;
 mod session;
 mod pio;
 mod transport;
-#[cfg(unix)]
 mod write;
 
-#[cfg(unix)]
-use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
-#[cfg(unix)]
-use std::sync::Arc;
-#[cfg(unix)]
-use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -100,8 +95,10 @@ impl Remote {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Mount the tablet's documents (read-only).
+    /// Mount the tablet's documents.
     Mount {
+        /// Where: a directory, or on Windows a drive letter like R: (or * for the
+        /// next free one) or a folder that doesn't exist yet.
         mountpoint: PathBuf,
         #[command(flatten)]
         remote: Remote,
@@ -132,6 +129,24 @@ enum Cmd {
         /// Log connections, index updates and warnings to stderr.
         #[arg(short, long)]
         verbose: bool,
+        /// Mount only while the USB cable is in: wait for it, unmount when it's
+        /// pulled, and wait again (needs --usb). For auto-mounting.
+        #[arg(long)]
+        follow_usb: bool,
+    },
+    /// Mount the tablet whenever it's plugged in by USB, from login on (Windows):
+    /// runs `re-fs mount MOUNTPOINT --usb --follow-usb MOUNT-ARGS…` in the background.
+    #[cfg(windows)]
+    Autostart {
+        /// Drive letter or folder to mount on.
+        #[arg(long, default_value = "R:")]
+        mountpoint: PathBuf,
+        /// Stop auto-mounting (and stop the running auto-mount).
+        #[arg(long)]
+        off: bool,
+        /// More arguments for `re-fs mount`, e.g. -- --ro --tls tablet.lan
+        #[arg(last = true)]
+        mount_args: Vec<String>,
     },
     /// List the folder tree as re-fs would show it.
     Ls {
@@ -197,7 +212,7 @@ enum Cmd {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Mount { mountpoint, remote, hide_notebooks, no_views, ro, overwrite, rw: _, cache_dir, cache_mib, verbose } => {
+        Cmd::Mount { mountpoint, remote, hide_notebooks, no_views, ro, overwrite, rw: _, cache_dir, cache_mib, verbose, follow_usb } => {
             let rw = match (ro, overwrite) {
                 (true, _) => session::Writes::ReadOnly,
                 (false, true) => session::Writes::Overwrite,
@@ -209,16 +224,21 @@ fn main() -> Result<()> {
             }
             let dir = cache_dir.unwrap_or_else(cache::Cache::default_dir);
             let cache = cache::Cache::open(dir.clone(), cache_mib << 20).with_context(|| format!("cache {}", dir.display()))?;
-            #[cfg(unix)]
-            return runtime()?.block_on(mount(targets, &mountpoint, TreeOptions { notebooks: !hide_notebooks, views: !no_views }, cache, rw, verbose));
-            #[cfg(not(unix))]
-            {
-                let _ = (mountpoint, hide_notebooks, no_views, cache, rw, verbose);
-                bail!("mounting isn't supported on this platform yet (Windows needs the WinFsp backend); ls, push, pair and deploy work")
+            // Windows can't show some names as they are, and compares them ignoring case.
+            let tree = TreeOptions { notebooks: !hide_notebooks, views: !no_views, windows_names: cfg!(windows) };
+            let opts = mount::Options { mountpoint, tree, writes: rw, verbose, follow_usb };
+            runtime()?.block_on(mount::mount(targets, opts, cache))
+        }
+        #[cfg(windows)]
+        Cmd::Autostart { mountpoint, off, mount_args } => {
+            if off {
+                autostart::disable()
+            } else {
+                autostart::enable(&mountpoint, &mount_args)
             }
         }
         Cmd::Ls { mirror, remote, path, recursive, long, paths, hide_notebooks, no_views, warnings } => {
-            let opts = TreeOptions { notebooks: !hide_notebooks, views: !no_views };
+            let opts = TreeOptions { notebooks: !hide_notebooks, views: !no_views, windows_names: false };
             let tree = match mirror {
                 Some(m) => Tree::build(&local::scan(&m)?, 0, &opts),
                 None if remote.targets().is_empty() => bail!("give --mirror DIR, --usb, --tls ADDR, --tcp ADDR or --ssh HOST"),
@@ -327,43 +347,6 @@ async fn fetch_tree(targets: Vec<Target>, opts: &TreeOptions) -> Result<Tree> {
         bail!("expected an index");
     };
     Ok(Tree::build(&decompress_entries(&entries)?, generation, opts))
-}
-
-#[cfg(unix)]
-async fn mount(targets: Vec<Target>, mountpoint: &Path, opts: TreeOptions, cache: Arc<cache::Cache>, rw: session::Writes, verbose: bool) -> Result<()> {
-    let shared = session::Shared::new(&opts, cache, rw, verbose);
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let via = targets.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
-    tokio::spawn(session::run(targets, shared.clone(), opts, ready_tx));
-    match tokio::time::timeout(Duration::from_secs(60), ready_rx).await {
-        Ok(Ok(Ok(()))) => {}
-        Ok(Ok(Err(e))) => return Err(e),
-        Ok(Err(_)) => bail!("session ended before connecting"),
-        Err(_) => bail!("{via}: no index after 60 s"),
-    }
-    let tree = shared.tree.load();
-    let fs = fs::ReFs::new(Arc::clone(&shared), tokio::runtime::Handle::current());
-    let session = fuser::Session::new(fs, mountpoint, &fs::mount_options(rw != session::Writes::ReadOnly))
-        .with_context(|| format!("mounting on {}", mountpoint.display()))?;
-    *shared.notifier.lock().unwrap() = Some(Arc::new(fs::FuseNotifier(session.notifier())));
-    let bg = session.spawn()?;
-    eprintln!("re-fs: {} items mounted on {} via {via} (Ctrl-C to unmount)", tree.nodes().count(), mountpoint.display());
-    drop(tree);
-
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    // The session thread ends when someone else unmounts (fusermount3 -u).
-    let unmounted = async {
-        while !bg.guard.is_finished() {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    };
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
-        _ = unmounted => eprintln!("re-fs: unmounted"),
-    }
-    drop(bg); // unmounts, if still mounted
-    Ok(())
 }
 
 /// Fetch the tablet's TLS public key over ssh (which authenticates the tablet) and pin it.

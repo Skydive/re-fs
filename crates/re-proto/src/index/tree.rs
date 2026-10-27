@@ -171,11 +171,13 @@ pub struct TreeOptions {
     pub notebooks: bool,
     /// Add .originals, .rmdoc, .recent, .pinned and .tags.
     pub views: bool,
+    /// Names valid on Windows (see `naming::windows_name`), clashes found ignoring case.
+    pub windows_names: bool,
 }
 
 impl Default for TreeOptions {
     fn default() -> Self {
-        TreeOptions { notebooks: true, views: true }
+        TreeOptions { notebooks: true, views: true, windows_names: false }
     }
 }
 
@@ -214,6 +216,9 @@ type Place = Result<usize, NodeId>;
 struct Builder {
     tree: Tree,
     taken_inos: HashSet<u64>,
+    /// With `windows_names`: each directory's names, case-folded.
+    windows: bool,
+    folded: Vec<HashSet<String>>,
 }
 
 impl Builder {
@@ -234,27 +239,44 @@ impl Builder {
         self.tree.by_ino.insert(node.ino, id);
         self.tree.nodes.push(node);
         self.tree.children.push(BTreeMap::new());
+        self.folded.push(HashSet::new());
         id
+    }
+
+    fn taken(&self, parent: NodeId, name: &str) -> bool {
+        self.tree.children[parent].contains_key(name) || (self.windows && self.folded[parent].contains(&naming::fold_case(name)))
+    }
+
+    /// Hold `name` in `parent` so nothing else takes it (or, on Windows, its case variants).
+    fn reserve(&mut self, parent: NodeId, name: &str, id: NodeId) {
+        self.tree.children[parent].entry(name.into()).or_insert(id);
+        if self.windows {
+            self.folded[parent].insert(naming::fold_case(name));
+        }
     }
 
     /// Add `node` under `parent`, numbering its name if it clashes.
     fn attach(&mut self, mut node: Node, parent: NodeId, ext: &str) -> NodeId {
         node.parent = parent;
+        if self.windows {
+            node.name = naming::windows_name(&node.name);
+        }
         let first = node.name.clone();
         let mut name = first.clone();
         let mut n = 2;
-        while self.tree.children[parent].contains_key(&name) {
+        while self.taken(parent, &name) {
             name = naming::numbered(&first, ext, n);
             n += 1;
         }
         node.name = name.clone();
         let id = self.push(node);
-        self.tree.children[parent].insert(name, id);
+        self.reserve(parent, &name, id);
         id
     }
 
     fn fixed_dir(&mut self, ino: u64, name: &str, kind: NodeKind, view: View, parent: NodeId) -> NodeId {
         self.taken_inos.insert(ino);
+        let name = &if self.windows { naming::windows_name(name) } else { name.to_owned() };
         let node = Node {
             uuid: None,
             ino,
@@ -273,6 +295,9 @@ impl Builder {
         let id = self.push(node);
         if id != parent {
             self.tree.children[parent].insert(name.into(), id);
+            if self.windows {
+                self.folded[parent].insert(naming::fold_case(name));
+            }
         }
         id
     }
@@ -326,6 +351,8 @@ impl Tree {
                 warnings: Vec::new(),
             },
             taken_inos: (0..ino::FIRST_DYNAMIC).collect(),
+            windows: opts.windows_names,
+            folded: Vec::new(),
         };
         b.fixed_dir(ino::ROOT, "", NodeKind::Root, View::Main, ROOT_ID);
         b.fixed_dir(ino::TRASH, TRASH_NAME, NodeKind::Trash, View::Main, ROOT_ID);
@@ -478,6 +505,15 @@ impl Tree {
         self.children[pid].get(name).map(|&id| &self.nodes[id])
     }
 
+    /// `lookup`, ignoring case as Windows does: an exact match first, then any name
+    /// that differs only in case (unique with `windows_names`).
+    pub fn lookup_nocase(&self, parent_ino: u64, name: &str) -> Option<&Node> {
+        self.lookup(parent_ino, name).or_else(|| {
+            let folded = naming::fold_case(name);
+            self.children(parent_ino)?.find(|n| naming::fold_case(&n.name) == folded)
+        })
+    }
+
     /// Children of a directory in name order; `None` if `ino` isn't a directory.
     pub fn children(&self, ino: u64) -> Option<impl Iterator<Item = &Node> + '_> {
         let pid = *self.by_ino.get(&ino)?;
@@ -594,7 +630,7 @@ fn build_folders(b: &mut Builder, items: &[Item], place: &[Place], order: &[usiz
     // Reserved names at the top level.
     if view == View::Main {
         for name in [LOST_FOUND_NAME, ORIGINALS_NAME, RMDOC_NAME, RECENT_NAME, PINNED_NAME, TAGS_NAME] {
-            b.tree.children[ROOT_ID].entry(name.into()).or_insert(usize::MAX);
+            b.reserve(ROOT_ID, name, usize::MAX);
         }
     }
     for &i in order {
@@ -760,7 +796,7 @@ mod tests {
 
     /// The tree as it was before views: no notebooks, no .originals etc.
     fn opts() -> TreeOptions {
-        TreeOptions { notebooks: false, views: false }
+        TreeOptions { notebooks: false, views: false, windows_names: false }
     }
 
     fn folder(id: u8, name: &str, parent: &str) -> Entry {
@@ -832,7 +868,7 @@ mod tests {
     fn notebooks_hidden_unless_enabled() {
         let entries = [doc(1, "Notes", "", "notebook", 0), doc(2, "Old", "", "", 0)];
         assert_eq!(paths(&Tree::build(&entries, 0, &opts())), [".trash"]);
-        let t = Tree::build(&entries, 0, &TreeOptions { notebooks: true, views: false });
+        let t = Tree::build(&entries, 0, &TreeOptions { notebooks: true, views: false, windows_names: false });
         assert_eq!(paths(&t), [".trash", "Notes.pdf", "Old.pdf"]);
     }
 
@@ -900,6 +936,22 @@ mod tests {
     }
 
     #[test]
+    fn windows_names() {
+        let opts = TreeOptions { windows_names: true, ..opts() };
+        let t = Tree::build(
+            &[doc(1, "Notes", "", "pdf", 1), doc(2, "notes", "", "pdf", 1), doc(3, "Q: why?", "", "pdf", 1), folder(4, "CON", ""), folder(5, "Physics ", "")],
+            0,
+            &opts,
+        );
+        assert_eq!(paths(&t), [".trash", "CON _", "Notes.pdf", "Physics\u{2002}", "Q꞉ why？.pdf", "notes (2).pdf"]);
+        assert_eq!(t.lookup_nocase(ino::ROOT, "NOTES.PDF").map(|n| n.uuid), Some(Some(u(1))));
+        assert_eq!(t.lookup_nocase(ino::ROOT, "Notes (2).PDF").map(|n| n.uuid), Some(Some(u(2))));
+        // Off (other platforms): names as before, clashes only by exact name.
+        let t = Tree::build(&[doc(1, "Notes", "", "pdf", 1), doc(2, "notes", "", "pdf", 1)], 0, &self::opts());
+        assert_eq!(paths(&t), [".trash", "Notes.pdf", "notes.pdf"]);
+    }
+
+    #[test]
     fn folder_cycle_goes_to_lost_found() {
         let (a, b) = (u(1).to_string(), u(2).to_string());
         let t = Tree::build(&[folder(1, "A", &b), folder(2, "B", &a), doc(3, "x", &a, "pdf", 1)], 0, &opts());
@@ -954,7 +1006,7 @@ mod tests {
         let t = Tree::build(
             &[with_strokes(doc(1, "Paper", "", "pdf", 9)), doc(2, "Plain", "", "pdf", 9), with_strokes(doc(3, "Book", "", "epub", 9)), with_strokes(doc(4, "Notes", "", "notebook", 0))],
             0,
-            &TreeOptions { notebooks: true, views: false },
+            &TreeOptions { notebooks: true, views: false, windows_names: false },
         );
         assert_eq!(
             paths(&t),
