@@ -388,6 +388,16 @@ pub fn annotate_with(original: &[u8], specs: &[PageSpec], rmdoc: Option<&[u8]>) 
             gs.set(GS_TRANSLUCENT, gs_id);
             resources.set("ExtGState", gs);
         }
+        // /Contents is a stream or an array, either of them possibly by reference.
+        // An array inside our array would be skipped by viewers: spread it out.
+        let original_contents = match doc.get_dictionary(pid)?.get(b"Contents") {
+            Ok(c) => match doc.dereference(c) {
+                Ok((_, Object::Array(a))) => a.clone(),
+                Ok((_, Object::Stream(_))) => vec![c.clone()],
+                _ => Vec::new(),
+            },
+            Err(_) => Vec::new(),
+        };
         let page = doc.get_object_mut(pid)?.as_dict_mut()?;
         for (k, v) in &attrs[1..] {
             if let Some(v) = v {
@@ -399,11 +409,7 @@ pub fn annotate_with(original: &[u8], specs: &[PageSpec], rmdoc: Option<&[u8]>) 
         if let Some(oid) = overlay_id {
             // Original content inside q/Q so its graphics state can't leak into ours.
             let mut contents = vec![Object::Reference(q_id)];
-            match page.get(b"Contents").cloned() {
-                Ok(Object::Array(a)) => contents.extend(a),
-                Ok(o @ Object::Reference(_)) => contents.push(o),
-                _ => {}
-            }
+            contents.extend(original_contents);
             contents.push(Object::Reference(bigq_id));
             contents.push(Object::Reference(oid));
             page.set("Contents", contents);
